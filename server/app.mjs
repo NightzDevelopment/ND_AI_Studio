@@ -2,6 +2,7 @@ import { createServer } from 'node:http';
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { isIP } from 'node:net';
 import { authorizeUrl, discordIdentity } from './discord.mjs';
+import { createStudio } from './studio.mjs';
 
 export const FRAMEWORKS = ['Standalone', 'ND_Framework', 'ESX', 'QBCore', 'Qbox', 'vRP', 'ox_core', 'Custom'];
 export const hash = value => createHash('sha256').update(value).digest('hex');
@@ -105,7 +106,8 @@ export function createApp({ config, store, catalog, identity = discordIdentity, 
   const redirect = (res, location) => { res.writeHead(303, { location }); res.end(); };
   function current(req) {
     const value = cookies(req)[config.sessionCookie];
-    return validToken(value) ? store.session(hash(value)) : null;
+    const session = validToken(value) ? store.session(hash(value)) : null;
+    return session && !studio.blocked(session.user_id) ? session : null;
   }
   function required(req) {
     const session = current(req);
@@ -120,6 +122,7 @@ export function createApp({ config, store, catalog, identity = discordIdentity, 
     rate(req, 'write', 90, 60000);
     return session;
   }
+  const studio = createStudio({ store, config, catalog, required, mutation, readJson, json });
   const server = createServer({ maxHeaderSize: 16384, requestTimeout: 30000, headersTimeout: 15000 }, async (req, res) => {
     res.setHeader('cache-control', 'no-store');
     res.setHeader('x-content-type-options', 'nosniff');
@@ -129,9 +132,10 @@ export function createApp({ config, store, catalog, identity = discordIdentity, 
       const url = new URL(req.url, config.origin);
       const path = url.pathname, method = req.method;
       rate(req, 'all', 240, 60000);
+      if (await studio.route(req, res, url)) return;
       if (method === 'GET' && path === '/api/health') {
         store.db.prepare('SELECT 1').get();
-        return json(res, 200, { ok: true, version: '0.2.0' });
+        return json(res, 200, { ok: true, version: '0.3.0' });
       }
       if (method === 'GET' && path === '/api/session') {
         const session = current(req);
@@ -166,6 +170,7 @@ export function createApp({ config, store, catalog, identity = discordIdentity, 
           const value = token(), csrf = token();
           store.transaction(() => {
             const user = store.login(discord);
+            if (studio.blocked(user.id)) fail(403, 'This Studio account is suspended.');
             const previous = current(req);
             if (previous) store.db.prepare('DELETE FROM sessions WHERE hash=?').run(previous.hash);
             store.newSession(hash(value), user.id, csrf, config.sessionSeconds);

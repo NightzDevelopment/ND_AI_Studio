@@ -2,27 +2,46 @@
 
 Nightz Development's original FiveM creation workspace at `ai.nightz.dev`.
 
-## Release 0.2: Discord accounts
+## Release 0.3: source workspaces and controlled generation
 
-Implemented:
+Studio now includes private source projects, an owner control room, Discord role mappings and a separate AI proposal worker. The existing Discord login, profiles and account briefs remain in place.
 
-- Server-side Discord authorization-code login with PKCE and browser-bound, single-use state.
-- Private profiles with a Discord avatar, username, editable display name and bio.
-- Saved default framework and comfortable/compact workspace density.
-- Persistent, private account briefs with create/edit/delete, search, sorting and JSON export.
-- Optional idempotent import of existing browser-local briefs. Browser originals are never deleted.
-- Custom keyboard-operable dropdowns, an account menu and confirmation dialogs.
-- Hashed server sessions, CSRF/origin checks, ownership checks, revision conflict protection and rate limits.
-- Sign out, sign out everywhere, and account data export.
-- A separate localhost API service and a scoped upgrade for the existing Nginx site.
+### Available in the application
 
-All 24 generation/conversion/browsing tools remain planned and disabled. There is no AI generation, worker execution, billing, public profile directory or community publishing yet. A brief is requirements data, not a generated resource.
+- Explicit owner Discord user-ID allowlist, least-privilege staff permissions, bot/guild connection checks and role refresh.
+- Account search, suspension, session revocation, per-account daily build and spending limits, audit history and tool access switches.
+- Private project creation, brief-to-project setup, search, sorting, favorites and archival.
+- Custom file explorer, tabbed source editor, syntax highlighting, unsaved-change protection, keyboard shortcuts and revision conflicts.
+- Create, edit, rename and delete source files; inspect historical versions, restore safely and export real ZIP files.
+- Desktop split-pane workspace and mobile Files/Editor/Build panels, using original HTML, modular JavaScript and custom CSS.
 
-Discord login uses the same identity provider as the Nightz website, not a shared website session or shared store database. Store purchases, licenses, membership benefits and staff permissions are not imported. The website repository is unchanged.
+### Generation requires configuration
 
-## Runtime
+The Script Generator and Discord Bot Generator have a real Responses API and worker path: queue, conservative budget reservation, persistent events, syntax/packaging checks, bounded repair, cancellation, comparison and explicit application of proposed files.
 
-Node.js 22.16 or newer. No npm dependencies or install step are required.
+Both generators are disabled by default. They require a configured model and prices, private provider credentials on a separate build host, a healthy rootless Docker validator, and owner-selected access. No generated source executes in the account API. Validation is not an FXServer or Discord runtime test.
+
+The remaining 22 catalog engines are still planned. There is no billing, public gallery, paid-credit system, 3D generation, animation export or shared Nightz store session in this release. No fake credits, progress events or activity records are used.
+
+## Deploy
+
+Full instructions and security boundaries are in [deploy/STUDIO.md](deploy/STUDIO.md).
+
+On the existing website VPS:
+
+```bash
+cd /opt/nd-ai-studio
+git pull --ff-only origin main
+bash deploy/setup-studio.sh
+```
+
+The installer privately asks for the owner's personal Discord user ID and optional bot token, preserves OAuth credentials, and reuses the existing account deployment and rollback path. It does not install a worker on the production website VPS. A first account installation still uses [deploy/ACCOUNTS.md](deploy/ACCOUNTS.md).
+
+Open `/workspace.html#projects` after normal Discord sign-in. Allowlisted owners can open `/workspace.html#admin`.
+
+## Runtime and tests
+
+Node.js 22.16 or newer. The application has no npm dependencies.
 
 ```bash
 npm test
@@ -30,62 +49,45 @@ npm run build
 npm start
 ```
 
-`npm start` keeps the existing static development preview. Account features require `npm run start:api` behind a same-origin proxy. Production uses the supplied Nginx configuration and systemd service, not the development preview.
+`npm start` is a static local preview. Account and workspace APIs require `npm run start:api` behind the same-origin proxy. Production uses the supplied systemd and Nginx deployment, not the development preview.
 
-The account API uses Node's built-in `node:sqlite` with WAL, foreign keys, parameterized queries and transactional imports. The SQLite API is experimental on Node 22; the tested runtime is Node 22.16 and the target VPS already has Node 22.23.1. Keep a supported patched Node release and verify updates before rollout. This is a bounded, single-process account service, not the planned distributed generation backend. Future multi-node execution should use the separately planned shared data/queue infrastructure.
+The separate generation worker uses `npm run start:worker` with its private environment and pinned rootless validator. Follow the dedicated-host instructions before starting it.
 
-## Deploy accounts
+Tests cover existing accounts, deployment readiness, ownership, CSRF, revisions, unsafe source paths, permission boundaries, spending reservations, worker leases, cancellation, provider response validation and container invocation constraints. Provider/Docker fixtures are not proof of live provider success or container enforcement. Complete a live acceptance test before making generation available to members.
 
-See [the account deployment guide](deploy/ACCOUNTS.md). Register this exact additional OAuth redirect on the Discord application:
+## Existing account behavior
 
-```text
-https://ai.nightz.dev/auth/discord/callback
-```
+Discord OAuth requests only `identify`, uses browser-bound single-use state and PKCE, and stores hashed server session tokens. Discord access/refresh tokens are not stored. Profiles include an editable display name, bio, default framework and layout density. Account briefs support search, sorting, editing, export and optional idempotent import of local drafts.
 
-The installer prompts for the OAuth client ID and secret privately in the SSH terminal. Do not paste them into chat, a repository, project briefs or frontend code. A bot token is not needed.
+Studio does not share the Nightz website's database, sessions, purchases, licenses, membership benefits or staff permissions. No website or existing bot repository was modified.
 
-```bash
-cd /opt/nd-ai-studio
-git pull --ff-only origin main
-bash deploy/setup-accounts.sh
-```
+## Data locations
 
-The installer expects the existing Ubuntu/Nginx layout and working certificate for `ai.nightz.dev`. It tests before publishing, snapshots an existing SQLite database, retains application releases and backs up the modified Nginx site and service files. Only the Studio virtual host gets new API routes and the Discord avatar image-source allowance. Other site files and the bot's PostgreSQL/Redis containers are not changed.
-
-## Data and sessions
-
-- Account data: `/var/lib/nd-ai-studio/studio.sqlite`, outside the web root and repository.
-- Private configuration: `/etc/nd-ai-studio.env`, mode 0600.
-- Service: `nd-ai-studio.service`, dynamic non-root user, bound to `127.0.0.1:3081`.
+- Private API configuration: `/etc/nd-ai-studio.env`, root-owned mode 0600.
+- Accounts, projects, revisions and job state: `/var/lib/nd-ai-studio/studio.sqlite`.
+- Account API: `nd-ai-studio.service`, dynamic non-root user, localhost port 3081.
 - Public assets: `/srv/nd-ai-studio/current`.
-- Backend releases: `/srv/nd-ai-studio/backend/releases`.
-- Sessions expire after seven days, with at most ten active sessions per user.
-- Account limits: 100 briefs, 80-character names, 12,000-character requirements, 500-character bio.
-- Guest briefs remain under `nd-ai-studio.briefs.v1` in browser storage. Import is opt-in and keeps local copies.
+- Backend release pointers: `/srv/nd-ai-studio/backend/current`.
+- Private worker configuration, on its separate host: `~/.config/nd-ai-worker.env`.
 
-Profiles are private. Only the `identify` OAuth scope is requested. Discord access/refresh tokens are not stored. User passwords, email, guild lists and messages are not requested. The host-only session cookie is separate from the store's cookies.
+SQLite uses WAL, foreign keys, parameterized queries and transactions. Node's SQLite API is experimental on the tested Node 22 runtime. This is a bounded single-server database and one logical build worker, not a distributed multi-node service.
 
-## Verification
-
-Automated tests cover OAuth state binding/replay/expiry, secure session cookies, CSRF, ownership, optimistic revisions, transactional imports, logout, input limits, database persistence and the existing catalog/storage behavior. Browser fixture checks cover profile saving against the real local API, guest and account briefs, custom keyboard dropdowns, confirmations, menus and responsive layouts. These use a seeded test identity, not a real Discord authorization.
-
-Live Discord authorization, systemd installation and Nginx deployment must still be verified on the VPS after credentials are configured. No test fixture or test sign-in endpoint is included in the production service.
+The database stays outside all public directories. Keep encrypted off-host backups, monitor disk usage, and use the SQLite backup API. Deployment snapshots alone are not a complete backup strategy.
 
 ## Source layout
 
-- `web/`: original semantic HTML, modular JavaScript and custom CSS.
-- `server/`: account API, Discord OAuth adapter, configuration and SQLite store.
-- `config/tools.json`: authoritative 24-tool catalog; all engines remain disabled.
-- `tests/`: Node tests.
-- `scripts/`: approved-asset build and static preview tooling.
-- `deploy/`: deployment, backup, Nginx patch and systemd files.
-- `docs/`: original design, product scope and proposed later platform architecture.
-- `assets/design/`: illustrative concept artwork, not a product screenshot.
-
-No UI frameworks, copied templates or generated fake build logs are used.
+- `web/`: original frontend, account controls and source workspace.
+- `server/`: OAuth/account API, Studio permissions, source storage and job coordination.
+- `worker/`: Responses provider adapter and trusted offline validator.
+- `config/tools.json`: 24-tool roadmap catalog. Actual access to the two implemented generators is controlled by private server settings.
+- `tests/`: regression tests; no production test-login endpoint.
+- `scripts/`: asset build and local static preview.
+- `deploy/`: bounded readiness checks, backups, Nginx integration and setup scripts.
+- `docs/`: initial design, scope and longer-term architecture proposals.
+- `assets/design/`: illustrative concept artwork, not an actual product screenshot.
 
 ## Security and licensing
 
-Never commit API keys, Discord tokens, SSH credentials, customer uploads or production databases. Run generated code only in a future isolated worker system, never in this account service.
+Never commit API keys, Discord tokens, SSH credentials, customer uploads or databases. Do not put secrets in project files, prompts or browser fields. Bot and worker credentials are separate from OAuth. The first registered account never becomes an owner automatically.
 
-No open-source license has been selected. Third-party assets need their own permissions, attribution and provenance.
+No open-source license has been selected. Third-party assets require their own permission, provenance and attribution. The older concept image contains illustrative credit balances and projects which are not implemented product claims.

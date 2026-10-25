@@ -7,7 +7,7 @@ const catalog = validateCatalog(JSON.parse(await readFile(new URL('config/tools.
 if (catalog.tools.length !== 24) throw new Error('Expected the approved 24-tool catalog.');
 await rm(output, { recursive: true, force: true });
 await mkdir(output, { recursive: true });
-for (const file of ['index.html', 'styles.css', 'app.js', 'data.js', 'account.js', 'account.css', 'controls.js']) {
+for (const file of ['index.html', 'styles.css', 'app.js', 'data.js', 'account.js', 'account.css', 'controls.js', 'workspace.html', 'workspace.css', 'workspace.js']) {
   await copyFile(new URL(`web/${file}`, root), new URL(file, output));
 }
 await copyFile(new URL('config/tools.json', root), new URL('catalog.json', output));

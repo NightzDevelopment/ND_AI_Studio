@@ -1,6 +1,6 @@
 {
   "name": "nd-ai-studio",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "description": "ND AI Studio accounts and creation workspace",
@@ -9,6 +9,7 @@
     "build": "node scripts/build.mjs",
     "start": "node scripts/build.mjs && node scripts/serve.mjs",
     "start:api": "node server/start.mjs",
+    "start:worker": "node worker/start.mjs",
     "test": "node --test tests/*.test.mjs"
   }
 }

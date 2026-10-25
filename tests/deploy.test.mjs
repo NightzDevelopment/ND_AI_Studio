@@ -123,7 +123,7 @@ test('deployment phases derive the version and verify every approved published a
   const root = pathToFileURL(`${directory}/`);
   await writeFile(join(directory, 'package.json'), '{"version":"test-version"}');
   await mkdir(join(directory, 'dist'));
-  const names = ['index.html', 'styles.css', 'app.js', 'data.js', 'catalog.json', 'account.js', 'account.css', 'controls.js'];
+  const names = ['index.html', 'styles.css', 'app.js', 'data.js', 'catalog.json', 'account.js', 'account.css', 'controls.js', 'workspace.html', 'workspace.css', 'workspace.js'];
   for (const file of names) await writeFile(join(directory, 'dist', file), file);
   const backend = await deploymentProbes('backend', root);
   assert.equal(backend[0].url, 'http://127.0.0.1:3081/api/health');
@@ -131,7 +131,7 @@ test('deployment phases derive the version and verify every approved published a
   const proxy = await deploymentProbes('proxy', root);
   assert.deepEqual(proxy.map(probe => probe.kind), ['health', 'session', 'callback']);
   const assets = await deploymentProbes('frontend', root);
-  assert.equal(assets.length, 8);
+  assert.equal(assets.length, 11);
   assert.equal(assets[5].digest, hash('account.js'));
   await assert.rejects(deploymentProbes('invalid', root), /Usage:/);
 });

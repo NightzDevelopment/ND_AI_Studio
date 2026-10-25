@@ -6,6 +6,7 @@ const $ = id => document.getElementById(id);
 const form = $('brief-form');
 const glyphs = { coding: '</>', '3d-assets': '3D', animation: 'FX', 'image-texture': '2D', 'utility-content': '[]' };
 const engines = { coding: 'AI coding', 'image-texture': 'Image & texture', '3d-assets': '3D assets', animation: 'Animation', 'utility-content': 'Utility & content' };
+const codeWorkspaces = new Set(['ai-script-generator', 'discord-bot-generator']);
 let catalog;
 let briefs = [];
 let category = 'all';
@@ -47,14 +48,14 @@ function persist(next) {
 function renderTools() {
   if (!catalog) return;
   const matches = filterTools(catalog.tools, $('search').value, category);
-  $('result-count').textContent = `${matches.length} of ${catalog.tools.length} planned tools`;
+  $('result-count').textContent = `${matches.length} of ${catalog.tools.length} tool definitions`;
   $('no-tools').hidden = matches.length > 0;
   $('tool-grid').replaceChildren(...matches.map(tool => {
     const card = element('button', 'tool-card'); card.type = 'button';
-    card.setAttribute('aria-label', `${tool.name}. Planned. View details.`);
+    card.setAttribute('aria-label', `${tool.name}. ${codeWorkspaces.has(tool.id) ? 'Code workspace' : 'Planned'}. View details.`);
     const top = element('span', 'card-top');
     const glyph = element('span', 'tool-glyph', glyphs[tool.engine]); glyph.setAttribute('aria-hidden', 'true');
-    top.append(glyph, element('span', 'planned-label', 'PLANNED'));
+    top.append(glyph, element('span', 'planned-label', codeWorkspaces.has(tool.id) ? 'CODE WORKSPACE' : 'PLANNED'));
     const bottom = element('span', 'card-bottom');
     bottom.append(element('span', '', engines[tool.engine]), element('span', '', 'View details ↗'));
     card.append(top, element('strong', 'tool-title', tool.name), element('span', 'tool-summary', tool.description), bottom);
@@ -63,7 +64,12 @@ function renderTools() {
 }
 function openTool(tool) {
   activeTool = tool; $('tool-dialog-title').textContent = tool.name; $('tool-description').textContent = tool.description;
-  $('tool-brief').hidden = tool.category === 'browse'; $('tool-dialog').showModal();
+  $('tool-brief').hidden = tool.category === 'browse';
+  const implemented = codeWorkspaces.has(tool.id), notice = $('tool-dialog').querySelector('.notice');
+  notice.querySelector('strong').textContent = implemented ? 'Code workspace available. Generation requires configuration.' : 'Planned, not available yet.';
+  notice.querySelector('p').textContent = implemented ? 'Create source files, save revisions, compare changes and export ZIPs. AI generation requires owner approval, a configured model and a healthy isolated worker.' : 'This tool has no connected generation or conversion engine. A brief records requirements; it does not create a resource.';
+  $('tool-workspace').hidden = !implemented;
+  $('tool-dialog').showModal();
 }
 function updateTarget() {
   const tool = catalog.tools.find(item => item.id === form.elements.toolId.value);
@@ -218,7 +224,7 @@ try {
   for (const tool of catalog.tools.filter(item => item.category !== 'browse')) $('brief-tool').add(new Option(tool.name, tool.id));
   for (const [id, name] of Object.entries(engines)) {
     const row = element('div', 'engine-row');
-    row.append(element('strong', '', name), element('span', '', `${catalog.tools.filter(tool => tool.engine === id).length} tools / Not connected`)); $('engine-list').append(row);
+    row.append(element('strong', '', name), element('span', '', id === 'coding' ? '2 coding workflows / Owner configuration required' : `${catalog.tools.filter(tool => tool.engine === id).length} tools / Not connected`)); $('engine-list').append(row);
   }
   refreshSelects(form);
   await initAccount(notify); cloud = Boolean(account.user); mountProjectControls();
