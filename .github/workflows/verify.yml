@@ -1,0 +1,36 @@
+name: Verify Studio
+on:
+  push:
+    branches: [main, 'feat/studio-v0.3-workspaces']
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm test
+      - run: npm run build
+      - name: Check shell scripts
+        run: find deploy -name '*.sh' -print0 | xargs -0 -r -n1 bash -n
+      - name: Package tracked source only
+        if: always()
+        run: git archive --format=tar.gz --output=studio-source.tar.gz HEAD
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: studio-source
+          path: studio-source.tar.gz
+          retention-days: 3
+          if-no-files-found: error
