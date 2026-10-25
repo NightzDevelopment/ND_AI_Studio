@@ -11,6 +11,7 @@ cd "$root"
 for command in python3 node npm; do command -v "$command" >/dev/null || exit 1; done
 npm test
 python3 - "$root" <<'PY'
+import getpass
 import os
 import re
 import secrets
@@ -18,6 +19,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import warnings
 from datetime import datetime, timezone
 from pathlib import Path
 root = Path(sys.argv[1])
@@ -32,14 +34,23 @@ for key in keys:
     if len(matches) > 1:
         raise SystemExit('Duplicate Studio environment keys. Review the private environment before upgrading.')
     values[key] = matches[0].strip().strip('"\'') if matches else ''
-with open('/dev/tty', 'r+') as tty:
-    if not values['OWNER_DISCORD_IDS']:
-        tty.write('Your personal Discord USER ID (not the OAuth application ID): ')
-        tty.flush()
-        values['OWNER_DISCORD_IDS'] = tty.readline().strip()
-    if not values['DISCORD_BOT_TOKEN']:
-        import getpass
-        values['DISCORD_BOT_TOKEN'] = getpass.getpass('Discord bot token for role checks (hidden, blank skips): ', stream=tty).strip()
+if not values['OWNER_DISCORD_IDS'] or not values['DISCORD_BOT_TOKEN']:
+    try:
+        # Terminals are not seekable. Keep input and prompt output separate.
+        with open('/dev/tty', 'r', encoding='utf-8') as tty_input, open('/dev/tty', 'w', encoding='utf-8') as tty:
+            with warnings.catch_warnings():
+                warnings.simplefilter('error', getpass.GetPassWarning)
+                if not values['OWNER_DISCORD_IDS']:
+                    tty.write('Your personal Discord USER ID (not the OAuth application ID): ')
+                    tty.flush()
+                    answer = tty_input.readline()
+                    if not answer:
+                        raise EOFError
+                    values['OWNER_DISCORD_IDS'] = answer.strip()
+                if not values['DISCORD_BOT_TOKEN']:
+                    values['DISCORD_BOT_TOKEN'] = getpass.getpass('Discord bot token for role checks (hidden, blank skips): ', stream=tty).strip()
+    except (OSError, EOFError, KeyboardInterrupt, getpass.GetPassWarning):
+        raise SystemExit('Secure interactive setup could not complete. Run this installer in your SSH terminal. Environment file unchanged.') from None
 ids = values['OWNER_DISCORD_IDS'].split(',')
 if not 1 <= len(ids) <= 10 or any(not re.fullmatch(r'\d{17,20}', value.strip()) for value in ids):
     raise SystemExit('Provide one to ten personal Discord user IDs, comma-separated.')

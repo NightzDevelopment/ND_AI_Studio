@@ -45,6 +45,7 @@ import re
 import secrets
 import shutil
 import tempfile
+import warnings
 from pathlib import Path
 path = Path.home() / '.config/nd-ai-worker.env'
 if path.is_symlink():
@@ -60,11 +61,17 @@ if path.exists():
                 raise SystemExit('Duplicate worker configuration keys.')
             values[key] = value.strip().strip('"\'')
 values.setdefault('STUDIO_ORIGIN', 'https://ai.nightz.dev')
-with open('/dev/tty', 'r+') as tty:
-    if not values.get('STUDIO_WORKER_TOKEN'):
-        values['STUDIO_WORKER_TOKEN'] = getpass.getpass('Studio worker token from the website private environment (hidden): ', stream=tty).strip()
-    if not values.get('OPENAI_API_KEY'):
-        values['OPENAI_API_KEY'] = getpass.getpass('OpenAI API key for this worker (hidden): ', stream=tty).strip()
+if not values.get('STUDIO_WORKER_TOKEN') or not values.get('OPENAI_API_KEY'):
+    try:
+        # getpass reads from the controlling terminal; this stream only prints prompts.
+        with open('/dev/tty', 'w', encoding='utf-8') as tty, warnings.catch_warnings():
+            warnings.simplefilter('error', getpass.GetPassWarning)
+            if not values.get('STUDIO_WORKER_TOKEN'):
+                values['STUDIO_WORKER_TOKEN'] = getpass.getpass('Studio worker token from the website private environment (hidden): ', stream=tty).strip()
+            if not values.get('OPENAI_API_KEY'):
+                values['OPENAI_API_KEY'] = getpass.getpass('OpenAI API key for this worker (hidden): ', stream=tty).strip()
+    except (OSError, EOFError, KeyboardInterrupt, getpass.GetPassWarning):
+        raise SystemExit('Secure interactive setup could not complete. Run this installer in your SSH terminal. Worker environment unchanged.') from None
 if not re.fullmatch(r'[a-f0-9]{64}', values['STUDIO_WORKER_TOKEN']):
     raise SystemExit('Invalid worker token.')
 if not re.fullmatch(r'[A-Za-z0-9_.-]{16,500}', values['OPENAI_API_KEY']):
