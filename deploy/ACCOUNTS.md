@@ -15,7 +15,7 @@ Use the OAuth client ID and client secret, not a bot token. Using a dedicated ap
 ## 2. Deploy from the existing root terminal
 
 ```bash
-cd /opt/nd-ai-studio
+cd /home/nd-ai-studio
 git status --short
 git pull --ff-only origin main
 bash deploy/setup-accounts.sh
@@ -57,7 +57,7 @@ For credential rotation, edit `/etc/nd-ai-studio.env` privately and restart only
 
 ```bash
 journalctl -u nd-ai-studio.service -n 50 --no-pager
-node /opt/nd-ai-studio/deploy/backup.mjs
+node /home/nd-ai-studio/deploy/backup.mjs
 ```
 
 Application logs intentionally omit authorization codes, cookies, tokens and request bodies. The Nginx `/auth/` location does not log OAuth query strings. Encrypted off-host backup and a retention policy are still operational responsibilities; the deploy-time snapshot is local only. Routine backup scheduling is not installed automatically.

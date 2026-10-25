@@ -24,7 +24,7 @@ npm test
 npm run build
 ```
 
-Only five approved files are written to `dist`. The repository, docs, credentials and source control files must never be used as the public document root.
+Only the approved frontend assets are written to `dist`. The repository, docs, credentials and source control files must never be used as the public document root.
 
 ## Publish assets
 
@@ -34,7 +34,7 @@ After reviewing the script, run it with permission to write `/srv/nd-ai-studio`:
 sudo bash deploy/publish.sh
 ```
 
-It copies only the five approved frontend files into a new immutable release directory and atomically changes `/srv/nd-ai-studio/current`. It retains previous releases. It does not change DNS, SSH, firewall settings, certificates or proxy configuration. It refuses to replace a regular `current` directory.
+It copies only the approved frontend assets into a new immutable release directory and atomically changes `/srv/nd-ai-studio/current`. It retains previous releases. It does not change DNS, SSH, firewall settings, certificates or proxy configuration. It refuses to replace a regular `current` directory.
 
 ## Configure the site
 

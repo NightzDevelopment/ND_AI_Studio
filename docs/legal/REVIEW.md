@@ -17,10 +17,12 @@ The WebP logo and PNG/ICO favicons are resized exports of the logo supplied in t
 - server/discord.mjs and server/config.mjs: Discord identify scope, browser-bound state, seven-day sessions, ten-minute sign-in binding, and no stored Discord access/refresh token.
 - server/studio-discord.mjs: optional bot-backed lookup of the configured guild's member roles; not a request for every guild through OAuth.
 - server/store.mjs and server/studio-domain.mjs: account data, briefs, versioned projects, jobs and audit records. Archival and current-file removal are not historical deletion.
-- server/studio.mjs: private account routes, administrative metadata, build queue, estimated usage controls and explicit review before applying a proposal.
+- server/studio.mjs: private account routes, administrative metadata, build queue, estimated usage controls and automatic saving of validated output only while the saved project still matches the build snapshot. Conflicting output remains available for inspection/export; existing review proposals are retained.
 - worker/provider.mjs: OpenAI Responses endpoint, current project snapshot, prompt and optional diagnostics. store:false is not a verified account-wide zero-retention setting.
 - web/account.js and server/app.mjs: profile/brief export; source ZIPs use separate project export routes. No self-service account deletion route was found.
-- No checkout, customer subscriptions or paid-credit billing is implemented in the reviewed Studio release. This does not establish a business decision that Studio must be free.
+- web/workspace.js and web/workspace-drafts.js: account/project-scoped source draft recovery in tab-local sessionStorage, with explicit resolution when incoming saved source conflicts. Drafts are not uploaded until saved.
+- server/studio-models.mjs: owner-granted internal credits, reservations, ledger entries, charged completed output and pending holds for uncertain usage. Delivered output blocked from automatic saving by a revision/storage conflict retains the existing delivered-proposal credit treatment.
+- No checkout, customer subscriptions, credit purchases or payment collection is implemented in the reviewed Studio release. Internal accounting does not establish a business decision that Studio must be free.
 
 These checks describe source, not all VPS, worker, provider-dashboard or hosting practices. No live provider configuration was inspected.
 

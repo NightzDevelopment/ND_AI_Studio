@@ -32,9 +32,13 @@ export function createStudio({ store, config, catalog, required, mutation, readJ
   }
   function jobView(row, details = true) {
     return { ...models.describe(row), id: row.id, projectId: row.project_id, baseVersion: row.base_version, prompt: details ? row.prompt : undefined, status: row.status,
+      applicationMode:row.application_mode, appliedVersion:row.applied_version, applicationError:row.application_error,
       costMicros: row.cost, reservedMicros: row.reserve, createdAt: row.created_at, updatedAt: row.updated_at,
       result: details && row.result ? JSON.parse(row.result) : null,
       events: details ? store.db.prepare('SELECT id,stage,message,created_at AS createdAt FROM studio_events WHERE job_id=? ORDER BY id').all(row.id) : [] };
+  }
+  function completionView(row) {
+    return { ok:true, status:row.status, appliedVersion:row.applied_version, applicationError:row.application_error };
   }
   function expireJobs() {
     const now = new Date().toISOString();
@@ -84,14 +88,14 @@ export function createStudio({ store, config, catalog, required, mutation, readJ
               const lease = randomBytes(32).toString('base64url');
               store.db.prepare("UPDATE studio_jobs SET status='running',lease=?,lease_until=?,updated_at=? WHERE id=? AND status='queued'").run(digest(lease),Date.now()+120000,new Date().toISOString(),row.id);
               event(store,row.id,'planning','Worker claimed the build.');
-              claimed = { id:row.id, lease, prompt:row.prompt, project:snapshot(store,p,row.base_version), settings:JSON.parse(row.settings) }; break;
+              claimed = { id:row.id, lease, prompt:row.prompt, applicationMode:row.application_mode, project:snapshot(store,p,row.base_version), settings:JSON.parse(row.settings) }; break;
             }
           });
           json(res,200,{ job:claimed }); return true;
         }
         fields(body,['id','lease','stage','message','result','costMicros']);
-        const row = workerJob(body);
         if (path === '/api/worker/progress') {
+          const row = workerJob(body);
           if (body.stage !== undefined) {
             insist(['planning','generating','checking','repairing','packaging'].includes(body.stage),400,'Invalid build stage.');
             event(store,row.id,body.stage,string(body.message,1000,'build event'));
@@ -103,7 +107,6 @@ export function createStudio({ store, config, catalog, required, mutation, readJ
         if (path === '/api/worker/complete') {
           fields(body.result,['files','summary','checks','error']);
           const cost = integer(body.costMicros,0,1000000000,'reported cost');
-          const settings = JSON.parse(row.settings);
           let result, status;
           if (body.result.error) {
             result = { error:string(body.result.error,1000,'build error') }; status='failed';
@@ -112,14 +115,38 @@ export function createStudio({ store, config, catalog, required, mutation, readJ
             insist(Array.isArray(body.result.checks) && body.result.checks.length <= 100 && body.result.checks.every(check => typeof check === 'string' && check.length <= 2000),400,'Invalid build checks.');
             result = { files, summary:string(body.result.summary,2000,'build summary'), checks:body.result.checks }; status='review';
           }
-          if (cost > settings.maxBudgetMicros) { status='failed'; result={ error:'Provider usage exceeded the configured estimate. Review billing and model prices before retrying.' }; }
-          store.transaction(() => {
-            workerJob(body);
-            store.db.prepare('UPDATE studio_jobs SET status=?,result=?,cost=?,lease=NULL,updated_at=? WHERE id=?').run(status,JSON.stringify(result),cost,new Date().toISOString(),row.id);
-            models.settle(row.id,status === 'review' ? 'charged' : cost === 0 ? 'released' : 'pending');
-            event(store,row.id,status,status === 'review' ? 'Files are ready for review. In-game behavior has not been tested.' : result.error);
+          const fingerprint = digest(JSON.stringify({costMicros:cost,result}));
+          const completed = store.transaction(() => {
+            const previous = store.db.prepare('SELECT * FROM studio_jobs WHERE id=?').get(body.id || '');
+            if (previous?.completion_hash) {
+              insist(typeof body.lease === 'string' && digest(body.lease) === previous.completion_lease && fingerprint === previous.completion_hash,409,'This build was already completed with a different receipt.');
+              return previous;
+            }
+            const row = workerJob(body), settings = JSON.parse(row.settings);
+            if (cost > settings.maxBudgetMicros) { status='failed'; result={ error:'Provider usage exceeded the configured estimate. Review billing and model prices before retrying.' }; }
+            let appliedVersion = null, applicationError = null;
+            if (status === 'review' && row.application_mode === 'automatic') {
+              // A save conflict must retain the validated output without partial source writes.
+              store.db.exec('SAVEPOINT generated_revision');
+              try {
+                const p = project(store,row.user_id,row.project_id);
+                appliedVersion = saveRevision(store,p,result.files,result.summary,row.user_id,row.base_version).version;
+                store.db.exec('RELEASE generated_revision');
+                status = 'applied';
+              } catch (error) {
+                store.db.exec('ROLLBACK TO generated_revision'); store.db.exec('RELEASE generated_revision');
+                if (!(error instanceof StudioError) || error.status !== 409) throw error;
+                applicationError = error.message;
+              }
+            }
+            store.db.prepare('UPDATE studio_jobs SET status=?,result=?,cost=?,lease=NULL,applied_version=?,application_error=?,completion_lease=?,completion_hash=?,updated_at=? WHERE id=?')
+              .run(status,JSON.stringify(result),cost,appliedVersion,applicationError,digest(body.lease),fingerprint,new Date().toISOString(),row.id);
+            models.settle(row.id,['review','applied'].includes(status) ? 'charged' : cost === 0 ? 'released' : 'pending');
+            const message = status === 'applied' ? `Validated files saved as project revision ${appliedVersion}. Runtime behavior has not been tested.` : status === 'review' ? applicationError ? `Validated output preserved for comparison and ZIP export. ${applicationError}` : 'Validated files are ready for optional review. Runtime behavior has not been tested.' : result.error;
+            event(store,row.id,status,message,true);
+            return store.db.prepare('SELECT * FROM studio_jobs WHERE id=?').get(row.id);
           });
-          json(res,200,{ ok:true }); return true;
+          json(res,200,completionView(completed)); return true;
         }
         throw new StudioError(404,'Worker endpoint not found.');
       }
@@ -270,10 +297,11 @@ export function createStudio({ store, config, catalog, required, mutation, readJ
           json(res,200,{ project:saved }); return true;
         }
         if (method === 'POST' && action === 'jobs') {
-          fields(body,['version','prompt','requestId','modelId','pricingVersion','quotedCredits']); const prompt=string(body.prompt,12000,'build request');
+          fields(body,['version','prompt','requestId','modelId','pricingVersion','quotedCredits','applicationMode']); const prompt=string(body.prompt,12000,'build request');
+          const applicationMode = body.applicationMode === undefined ? 'automatic' : body.applicationMode; insist(['automatic','review'].includes(applicationMode),400,'Choose automatic saving or review for this build.');
           insist(typeof body.requestId === 'string' && /^[a-f0-9-]{36}$/.test(body.requestId),400,'Invalid build request ID.');
           const duplicate=store.db.prepare('SELECT * FROM studio_jobs WHERE user_id=? AND request_id=?').get(a.user.id,body.requestId);
-          if (duplicate) { insist(duplicate.project_id === row.id && duplicate.prompt === prompt && (body.modelId === undefined || JSON.parse(duplicate.settings).model === body.modelId),409,'This request ID belongs to another build.'); json(res,200,{ job:jobView(duplicate) }); return true; }
+          if (duplicate) { insist(duplicate.project_id === row.id && duplicate.prompt === prompt && (body.applicationMode === undefined || duplicate.application_mode === applicationMode) && (body.modelId === undefined || JSON.parse(duplicate.settings).model === body.modelId),409,'This request ID belongs to another build.'); json(res,200,{ job:jobView(duplicate) }); return true; }
           insist(row.version === body.version,409,'Project changed. Reload before generating.');
           insist(allowed(row.tool_id,a.user),403,'This generator is not enabled for your account.');
           insist(workerReady(),503,'No healthy isolated worker is connected.');
@@ -285,7 +313,7 @@ export function createStudio({ store, config, catalog, required, mutation, readJ
             insist(usage.n < limits.daily_limit && usage.cost+s.maxBudgetMicros <= limits.daily_budget,429,'Your daily build or spending limit has been reached.');
             insist(!store.db.prepare("SELECT 1 FROM studio_jobs WHERE user_id=? AND status IN ('queued','running')").get(a.user.id),409,'Finish or cancel your active build first.');
             insist(store.db.prepare("SELECT count(*) n FROM studio_jobs WHERE status IN ('queued','running')").get().n < 20,503,'The build queue is full.');
-            store.db.prepare('INSERT INTO studio_jobs(id,user_id,project_id,request_id,base_version,prompt,settings,reserve,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)').run(id,a.user.id,row.id,body.requestId,row.version,prompt,JSON.stringify(s),s.maxBudgetMicros,now,now);
+            store.db.prepare('INSERT INTO studio_jobs(id,user_id,project_id,request_id,base_version,prompt,settings,reserve,created_at,updated_at,application_mode) VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(id,a.user.id,row.id,body.requestId,row.version,prompt,JSON.stringify(s),s.maxBudgetMicros,now,now,applicationMode);
             models.reserve(id,a.user.id,s);
             event(store,id,'queued','Build queued. Only this project snapshot and request will be sent to the configured AI provider.');
           }); json(res,202,{ job:jobView(store.db.prepare('SELECT * FROM studio_jobs WHERE id=?').get(id)) }); return true;
@@ -304,15 +332,20 @@ export function createStudio({ store, config, catalog, required, mutation, readJ
           store.transaction(() => {
             insist(store.db.prepare("UPDATE studio_jobs SET status='cancelled',cost=CASE WHEN status='running' THEN reserve ELSE 0 END,lease=NULL,updated_at=? WHERE id=? AND status IN ('queued','running')").run(new Date().toISOString(),job.id).changes,409,'This build is no longer running.');
             models.settle(job.id,job.status === 'queued' ? 'released' : 'pending');
-            event(store,job.id,'cancelled','Cancellation requested. Any provider work already accepted may still be billed.');
+            event(store,job.id,'cancelled','Cancellation requested. Any provider work already accepted may still be billed.',true);
           }); json(res,200,{ ok:true }); return true;
         }
         if (method === 'POST' && jm[2] === 'apply') {
           const saved=store.transaction(() => {
-            insist(job.status === 'review',409,'Only reviewed build results can be applied.');
-            const row=project(store,a.user.id,job.project_id); insist(!row.archived && row.version === job.base_version && body.version === row.version,409,'Project changed after this build started. Export the result or start a new build; nothing was overwritten.');
-            const result=JSON.parse(job.result), updated=saveRevision(store,row,result.files,result.summary,a.user.id,body.version);
-            store.db.prepare("UPDATE studio_jobs SET status='applied',updated_at=? WHERE id=?").run(new Date().toISOString(),job.id); return updated;
+            const current=store.db.prepare('SELECT * FROM studio_jobs WHERE id=? AND user_id=?').get(job.id,a.user.id);
+            if (current.status === 'applied' && current.applied_version) {
+              const row=project(store,a.user.id,current.project_id);
+              return snapshot(store,row);
+            }
+            insist(current.status === 'review',409,'Only reviewed build results can be applied.');
+            const row=project(store,a.user.id,current.project_id); insist(!row.archived && row.version === current.base_version && body.version === row.version,409,'Project changed after this build started. Export the result or start a new build; nothing was overwritten.');
+            const result=JSON.parse(current.result), updated=saveRevision(store,row,result.files,result.summary,a.user.id,body.version);
+            store.db.prepare("UPDATE studio_jobs SET status='applied',applied_version=?,application_error=NULL,updated_at=? WHERE id=?").run(updated.version,new Date().toISOString(),job.id); return updated;
           }); json(res,200,{ project:saved }); return true;
         }
       }

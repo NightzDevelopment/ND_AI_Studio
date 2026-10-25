@@ -6,7 +6,7 @@ This release extends the existing Node, SQLite, Nginx and vanilla JavaScript app
 
 - Explicit owner Discord user-ID allowlist, bot-backed guild role mappings, separate administration permissions, user suspension, session revocation, daily build/spend limits, audit history and generator access controls.
 - Private projects created from scratch or copied from saved briefs, a custom source editor with syntax highlighting and tabs, file creation/rename/delete, optimistic revisions, favorites, archival, historical comparison, restore and ZIP export.
-- Script and Discord bot proposal generation using the OpenAI Responses API, persistent queue/events, polling-based live logs, cancellation, bounded repairs, conservative spending reservations and review-before-apply.
+- Script and Discord bot generation using the OpenAI Responses API, persistent queue/events, polling-based live logs, cancellation, bounded repairs, conservative spending reservations and automatic saving of validated files as a new revision. History, comparison and ZIP downloads remain available.
 - A separate build worker, pinned local validator image and offline rootless-container syntax checks. Project source is never executed by the account API.
 
 The other 22 tool engines are not implemented. All generation is disabled by default. A project can be edited and exported without a connected worker. No subscriptions, paid credits, public gallery, store entitlements or shared account system are added.
@@ -16,7 +16,7 @@ The other 22 tool engines are not implemented. All generation is disabled by def
 Run in the existing root SSH terminal:
 
 ```bash
-cd /opt/nd-ai-studio
+cd /home/nd-ai-studio
 git status --short
 git pull --ff-only origin main
 bash deploy/setup-studio.sh
@@ -55,7 +55,7 @@ Revoking a user's sessions affects Studio only. Suspension blocks Studio sign-in
 
 ## Dedicated generation host
 
-Use a separate Linux build host and a dedicated non-root account. Keep generation away from the website, customer data and existing Discord bot services. The worker needs Node 22.16 or newer, rootless Docker, cgroup v2, the systemd cgroup driver and a working rootless Docker user service. This release deliberately refuses rootful Docker and unpinned validator image tags.
+The current owner test installation uses a dedicated non-root account on the website VPS. Keep it in Owner testing, preserve existing rootless Docker and leave the unrelated website and Discord bot services alone. A separate Linux build host is the recommended boundary before wider untrusted use; a second account on one VPS does not provide physical or VM isolation. The worker needs Node 22.16 or newer, rootless Docker, cgroup v2, the systemd cgroup driver and a working rootless Docker user service. This release deliberately refuses rootful Docker and unpinned validator image tags.
 
 Install those prerequisites using the official Docker rootless documentation. A server administrator must enable lingering for the worker account so its user service remains running after logout. Run `loginctl enable-linger` with the actual worker username from an administrative terminal, not with the website account's root credentials in a project.
 
@@ -76,7 +76,7 @@ journalctl --user -u nd-ai-worker.service -n 40 --no-pager
 
 The worker authenticates to the website over HTTPS. It receives only a claimed project's snapshot, instructions and non-secret generation settings. The website never receives the provider key. The worker receives neither account sessions nor the bot token. A worker token is privileged: it can claim queued source snapshots, so keep it private and rotate it on both hosts after exposure.
 
-Do not mount a Docker socket, credentials, website directories or arbitrary host paths into validation containers. The validator mounts only a temporary source tree read-only, disables the network, drops capabilities, uses a non-root UID, and applies memory, PID, CPU and time limits. Containers are forcibly removed after checks, including timed-out Docker clients. Container isolation is not an absolute security guarantee; the separate host remains necessary.
+Do not mount a Docker socket, credentials, website directories or arbitrary host paths into validation containers. The validator mounts only a temporary source tree read-only, disables the network, drops capabilities, uses a non-root UID, and applies memory, PID, CPU and time limits. Containers are forcibly removed after checks, including timed-out Docker clients. Container isolation is not an absolute security guarantee; co-location remains a limitation of the owner test deployment.
 
 ## Enable owner testing
 
@@ -88,7 +88,9 @@ The input estimate counts UTF-8 request bytes plus headroom and reserves configu
 
 A job receives one active lease. Lost or expired leases are failed rather than automatically replayed, because the original provider request may already have been billed. Cancelling a running job stops future work when the worker detects it, but cannot retract a provider request already accepted. Unknown outcomes retain the full reservation. The UI labels this conservatively; do not describe it as an actual provider invoice.
 
-Successful jobs produce proposals, not immediate project writes. Inspect the changed-file comparison, download it or apply it. Applying requires the same project revision used by the build. Concurrent manual changes are never silently replaced. Failed checks get at most one repair when the configured call limit and remaining budget permit it.
+New builds save successfully validated files as a new project revision automatically. Saving requires the same saved project revision used by the build. Concurrent manual changes are never silently replaced: validated output remains available for comparison and ZIP download when a conflict or storage limit blocks saving. Existing review proposals retain their manual Apply action, and an explicitly requested review-mode job keeps that behavior. Failed checks get at most one repair when the configured call limit and remaining budget permit it.
+
+Finalization, the saved revision, completion receipt and Studio credit settlement share a database transaction. Retrying an identical authenticated completion does not create another revision or charge again. Browser drafts are retained separately from incoming saved source. Automatic saving does not deploy or execute output on FiveM or start a Discord bot. See [the upgrade and acceptance checks](../docs/AUTOMATIC_BUILDS.md).
 
 ## Validation scope
 
