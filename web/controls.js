@@ -20,6 +20,12 @@ export function enhanceSelect(select) {
   select.insertAdjacentElement('afterend', wrapper); wrapper.append(button, list);
   select.hidden = true;
   let focused = 0, options = [], typed = '', lastType = 0;
+  const enabled = index => Boolean(select.options[index] && !select.options[index].disabled && !select.options[index].parentElement?.disabled);
+  const firstEnabled = () => [...select.options].findIndex((option,index) => enabled(index));
+  const lastEnabled = () => [...select.options].reduce((last,option,index) => enabled(index) ? index : last, -1);
+  function move(direction) {
+    for (let index=focused+direction; index>=0 && index<options.length; index+=direction) if (enabled(index)) { focused=index; return; }
+  }
   function paint() {
     options.forEach((option, index) => {
       option.classList.toggle('is-active', index === focused);
@@ -31,7 +37,7 @@ export function enhanceSelect(select) {
     }
   }
   function close(commit = false) {
-    if (commit && !list.hidden && options[focused]) {
+    if (commit && !list.hidden && options[focused] && enabled(focused)) {
       select.selectedIndex = focused;
       select.dispatchEvent(new Event('change', { bubbles: true }));
     }
@@ -42,7 +48,7 @@ export function enhanceSelect(select) {
   function open() {
     if (select.disabled) return;
     active?.close(); active = { close };
-    focused = Math.max(0, select.selectedIndex); list.hidden = false;
+    focused = enabled(select.selectedIndex) ? select.selectedIndex : firstEnabled(); list.hidden = false;
     button.setAttribute('aria-expanded', 'true'); paint();
   }
   function refresh() {
@@ -50,9 +56,9 @@ export function enhanceSelect(select) {
     button.disabled = select.disabled;
     options = [...select.options].map((option, index) => {
       const node = document.createElement('span'); node.className = 'select-option'; node.id = `${id}-${index}`;
-      node.setAttribute('role', 'option'); node.textContent = option.textContent;
+      node.setAttribute('role', 'option'); node.setAttribute('aria-disabled',String(!enabled(index))); node.textContent = option.textContent;
       node.addEventListener('pointerdown', event => event.preventDefault());
-      node.addEventListener('click', () => { focused = index; close(true); button.focus(); });
+      node.addEventListener('click', () => { if(!enabled(index))return; focused = index; close(true); button.focus(); });
       return node;
     });
     list.replaceChildren(...options); paint();
@@ -62,11 +68,11 @@ export function enhanceSelect(select) {
     const key = event.key;
     if (['ArrowDown', 'ArrowUp', 'Home', 'End', 'Enter', ' '].includes(key)) {
       event.preventDefault();
-      if (list.hidden) { open(); if (key === 'Home') focused = 0; else if (key === 'End') focused = options.length - 1; }
+      if (list.hidden) { open(); if (key === 'Home') focused = firstEnabled(); else if (key === 'End') focused = lastEnabled(); }
       else if (key === 'Enter' || key === ' ') return close(true);
-      else if (key === 'Home') focused = 0;
-      else if (key === 'End') focused = options.length - 1;
-      else focused = Math.max(0, Math.min(options.length - 1, focused + (key === 'ArrowDown' ? 1 : -1)));
+      else if (key === 'Home') focused = firstEnabled();
+      else if (key === 'End') focused = lastEnabled();
+      else move(key === 'ArrowDown' ? 1 : -1);
       paint();
     } else if (key === 'Escape' && !list.hidden) {
       event.preventDefault(); event.stopPropagation(); close();
@@ -75,7 +81,7 @@ export function enhanceSelect(select) {
       event.preventDefault();
       if (list.hidden) open();
       typed = Date.now() - lastType > 700 ? key.toLowerCase() : typed + key.toLowerCase(); lastType = Date.now();
-      const match = options.findIndex(option => option.textContent.toLowerCase().startsWith(typed));
+      const match = options.findIndex((option,index) => enabled(index) && option.textContent.toLowerCase().startsWith(typed));
       if (match >= 0) focused = match;
       paint();
     }

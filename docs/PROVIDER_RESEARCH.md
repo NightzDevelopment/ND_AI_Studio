@@ -1,36 +1,110 @@
-# Provider verification status
+# Provider verification record
 
-Research date: 2026-10-25. The implemented integration remains the OpenAI Responses API. This record does not enable models, change prices, or establish access to a provider account.
+Research date: 2026-10-25. This record covers public documentation and source inspection. It does not establish account access, authorize paid requests, enable a model, or prove live generation. No paid probes or provider fallback requests were made.
 
-## What was verified
+## Small coding selection
 
-The official OpenAI Python SDK at revision `5d72315876ffd8b72b958623ef4db26da3fb1e61` lists several requested identifiers:
+These candidates have useful documented differences in cost or capability. Prices are USD per one million tokens, excluding tax, regional premiums, optional tools and other service tiers. Studio's provider-cost estimate and its owner-configured internal credit charge remain separate.
 
-- [Chat model types](https://github.com/openai/openai-python/blob/5d72315876ffd8b72b958623ef4db26da3fb1e61/src/openai/types/shared/chat_model.py): `gpt-6-astra`, `gpt-6.1-sol`, `gpt-6-sol`, `gpt-6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`, `gpt-5.4`, and `gpt-5.4-mini`.
-- [Responses model types](https://github.com/openai/openai-python/blob/5d72315876ffd8b72b958623ef4db26da3fb1e61/src/openai/types/shared_params/responses_model.py): `gpt-5.5-pro`.
+| Provider | Exact API model ID | Intended choice | Uncached input | Cached input | Output | Documented context / maximum output |
+| --- | --- | --- | ---: | ---: | ---: | --- |
+| OpenAI | `gpt-6-luna` | Efficient, focused coding tasks | 0.10 | 0.01 | 0.50 | 1,050,000 / 128,000 tokens |
+| OpenAI | `gpt-6.1-sol` | Complex coding with lower cost than Astra | 2.00 | 0.10 | 10.00 | 1,050,000 / 128,000 tokens |
+| OpenAI | `gpt-6-astra` | Premium, demanding coding and reasoning | 10.00 | 1.00 | 50.00 | 1,050,000 / 128,000 tokens |
+| DeepSeek | `deepseek-flash` | Low-cost alternative provider | 0.30 | 0.006 | 1.20 | Advertised 1M / 384K tokens |
+| DeepSeek | `deepseek-v4-pro` | Higher-end DeepSeek alternative | 1.32 | 0.044 | 3.96 | Advertised 1M / 384K tokens |
 
-An SDK type is evidence of an identifier, not current availability, pricing, context/output limits, strict JSON-schema support or suitability for this generator. SDKs can retain obsolete identifiers. No model was added or enabled from these lists alone. Other candidate display names have not been converted into guessed API IDs.
+The OpenAI rows use Standard processing and the short-input price band. Their model pages explicitly support Responses and structured outputs. They accept text and image input and return text; Studio uses their text/code path only. Studio can retain its smaller source and output limits.
 
-Official independent provider sources establish the following distinctions:
+The DeepSeek rows deliberately use **peak prices as conservative estimates**. Off-peak prices are half these amounts. The provider defines peak hours as Monday through Friday, 01:00-04:00 and 06:00-10:00 UTC, excluding Chinese public holidays. Frozen peak-price snapshots avoid pretending to implement the provider's holiday calendar or predicting which price window a request will finish in. Actual provider charges may be lower. This is an estimate, not a provider invoice.
 
-- [DeepSeek-V3 README, API section](https://github.com/deepseek-ai/DeepSeek-V3/blob/9b4e9788e4a3a731f7567338ed15d3ec549ce03b/README.md) links its API to `platform.deepseek.com` and describes OpenAI compatibility. This does not establish support for the Responses request used by Studio.
+DeepSeek documents `deepseek-flash` as served by DeepSeek-V4.1-Flash-1017 and `deepseek-v4-pro` by DeepSeek-V4-Pro-0813. Legacy Flash aliases are accepted but point to retired model names; use the current documented ID instead.
+
+Sources:
+
+- [OpenAI pricing](https://developers.openai.com/api/docs/pricing).
+- [GPT-6 Luna](https://developers.openai.com/api/docs/models/gpt-6-luna).
+- [GPT-6.1 Sol](https://developers.openai.com/api/docs/models/gpt-6.1-sol).
+- [GPT-6 Astra](https://developers.openai.com/api/docs/models/gpt-6-astra).
+- [DeepSeek models and pricing](https://api-docs.deepseek.com/quick_start/pricing/). The trailing-slash URL returned the pricing page during this research; the path without a trailing slash unexpectedly returned the introductory page.
+
+Prices and aliases can change. Recheck official documentation before updating presets, and preserve the exact model, prices, provider, limits and credit quote captured by an existing job. Owner-configured premium credit charges do not imply an automatic conversion from provider spending to customer money.
+
+## OpenAI request and accounting contract
+
+Use the fixed HTTPS endpoint `https://api.openai.com/v1/responses`, a private worker credential and the documented Responses JSON-schema output format. Do not enable built-in tools or a different processing tier implicitly.
+
+For the three OpenAI candidates above, prompts exceeding 272K input tokens use twice the ordinary input and cache rates and 1.5 times the output rate for the full request. These multipliers are verified for these model profiles, not arbitrary older or custom models.
+
+Caching needs explicit treatment. For GPT-5.6 and later, cache writes are billed at 1.25 times the ordinary input price for the default 30-minute lifetime, or 2.5 times the input price for the optional 12-hour lifetime. These replace the ordinary rate for those tokens; they are not an additional charge on the same ordinary tokens.
+
+The documented nesting is:
+
+```json
+{
+  "usage": {
+    "input_tokens": 12000,
+    "input_tokens_details": {
+      "cached_tokens": 4000,
+      "cache_write_tokens": 7000,
+      "cache_write_tokens_details": {
+        "ttl_30m_tokens": 3000,
+        "ttl_12h_tokens": 4000
+      }
+    }
+  }
+}
+```
+
+Here ordinary input is `12000 - 4000 - 7000 = 1000`. The two write components do not overlap and sum to the write count. Charge ordinary tokens at the ordinary input rate, reads at the cached rate, and each write component at its corresponding write rate. Validate counts and reject inconsistent usage rather than undercounting it. Output tokens already include reasoning tokens; do not add the reasoning subset again.
+
+The prompt-caching guide documents a supported way to avoid cache writes on these newer models: send top-level `prompt_cache_options: { "mode": "explicit" }` and place no explicit cache breakpoints. The request then uses neither caching nor cache writes. This policy must be confined to supported model profiles and captured with the job. Do not send new caching fields to arbitrary legacy models or assume that `store: false` controls caching.
+
+[Official prompt-caching contract, rates and usage examples](https://developers.openai.com/api/docs/guides/prompt-caching).
+
+## DeepSeek request and accounting contract
+
+Use a separate provider selection, credential and constrained HTTPS endpoint: `https://api.deepseek.com/responses`. Responses support was verified directly, rather than inferred from the label "OpenAI-compatible."
+
+The official API reference documents:
+
+- `input`, `instructions`, `max_output_tokens` and non-streaming Responses requests.
+- `text.format: { "type": "json_schema", "name": "...", "schema": { ... } }`. It also supports JSON-object mode. The format reference enumerates type, name and schema; do not depend on an undocumented `strict` flag for enforcement. Validate the returned source schema, paths and limits locally.
+- `reasoning: { "effort": "none" }` explicitly disables thinking. Without an override, thinking is enabled with high effort. Output limits include reasoning and visible output together.
+- A stateless response with `status`, `output`, and Responses-shaped `usage.input_tokens`, `usage.input_tokens_details.cached_tokens`, and `usage.output_tokens`. Reasoning tokens are a subset of output.
+- `store` is unsupported and the response always reports `store: false`. Previous-response IDs, conversations and background mode are unsupported. Many unsupported parameters are silently ignored.
+- Prompt caching is managed automatically. The documented prices distinguish cache hits and misses, without a separate cache-write price. OpenAI cache-control and cache-write assumptions must not be copied into this adapter.
+- Non-streaming requests may emit blank keep-alive lines before the JSON response. A client timeout and bounded response size still apply. The server closes a connection if inference has not started after ten minutes. A timeout is an uncertain billed outcome, not permission to retry the paid request.
+- A non-personal custom `user` identifier can isolate cache and scheduling on the Responses interface. Do not send Discord identity or other personal information for this purpose.
+
+Sources:
+
+- [Responses compatibility guide](https://api-docs.deepseek.com/guides/responses_api).
+- [Create response API reference](https://api-docs.deepseek.com/api/create-response).
+- [Thinking mode](https://api-docs.deepseek.com/guides/thinking_mode).
+- [Context caching](https://api-docs.deepseek.com/guides/kv_cache).
+- [Rate limits, identity isolation and keep-alives](https://api-docs.deepseek.com/quick_start/rate_limit).
+- [JSON-output guide](https://api-docs.deepseek.com/guides/json_mode). Its Chat Completions examples do not by themselves establish the Responses schema contract; the separate Responses reference does.
+
+Keep source validation, rootless container checks, cancellation, bounded repair, budget reservations, immutable prices and unknown-outcome holds common across providers. Never retry or silently fall back to another paid provider.
+
+## Qwen platform remains unresolved
+
+The selected [qwen.ai API-platform URL](https://qwen.ai/apiplatform) returned HTTP 200, but its response was a JavaScript application shell rather than an inspectable API catalog. Its script assets reference `g.alicdn.com`; those requests returned HTTP 403 during the research. The required documentation/script destinations were saved to the environment configuration draft. Saving a draft does not prove runtime propagation.
+
+The shell contains DeepSeek terms in metadata keywords. **Search keywords are not evidence that the platform sells or serves DeepSeek.** Whether this selected Qwen platform offers DeepSeek remains unverified. No Qwen model ID, price, adapter contract or credential interchangeability was inferred from that page.
+
+Independent official sources establish narrower facts:
+
 - [Qwen3 README](https://github.com/QwenLM/Qwen3/blob/7a2f61ffc7a20d47efcd2bf97f6f2bf52729042e/README.md) links hosted Qwen models to Alibaba Cloud Model Studio.
-- [Qwen-Agent README](https://github.com/QwenLM/Qwen-Agent/blob/31a4d36d123688581a9e9744427272b33ce940e0/README.md) distinguishes its native `qwen_dashscope` adapter and `DASHSCOPE_API_KEY` from other OpenAI-compatible deployments. An example model in that document does not establish its current price or availability on a different platform.
+- [Qwen-Agent README](https://github.com/QwenLM/Qwen-Agent/blob/31a4d36d123688581a9e9744427272b33ce940e0/README.md) distinguishes a native `qwen_dashscope` adapter and `DASHSCOPE_API_KEY` from other OpenAI-compatible deployments.
 
-Whether the selected `https://qwen.ai/apiplatform` offers DeepSeek remains unverified. Do not treat Qwen, DashScope, Alibaba Model Studio and independently hosted models as interchangeable accounts or API contracts.
+These facts do not prove that Qwen, DashScope, Alibaba Model Studio and independent hosting share accounts, model catalogs or API contracts. Qwen integration needs selected-platform evidence before implementation or enablement.
 
-## Blocked checks
+## Remaining candidates and acceptance
 
-The cloud environment's proxy rejected the official DeepSeek and Qwen documentation requests with CONNECT 403. OpenAI pricing/capability documentation was not available through the current allowlist. Required documentation destinations were saved to the environment configuration draft: `api-docs.deepseek.com`, `qwen.ai`, and `developers.openai.com`. Saving a draft does not apply networking changes; review and save the settings before retrying.
+The [official OpenAI SDK model types](https://github.com/openai/openai-python/blob/5d72315876ffd8b72b958623ef4db26da3fb1e61/src/openai/types/shared/chat_model.py) and [Responses types](https://github.com/openai/openai-python/blob/5d72315876ffd8b72b958623ef4db26da3fb1e61/src/openai/types/shared_params/responses_model.py) identify additional requested names, including `gpt-6-sol`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`, `gpt-5.5-pro`, `gpt-5.4` and `gpt-5.4-mini`. SDK presence is not sufficient verification of their current price, lifecycle, limits, account access or suitability. SDKs retain deprecated values. Do not convert unverified display names into guessed IDs or bulk-enable candidates.
 
-The GitHub Actions API also returned Forbidden. `api.github.com` was included in the draft for read-only CI inspection. Native Git access worked but does not establish GitHub API authorization. No current CI outcome was inferred from this failure.
+Image, audio, realtime, transcription, translation and restricted specialist models need their own implemented pipelines and billing units. They do not belong in the coding selector merely because an identifier exists.
 
-Current provider prices, complete capability contracts, account access and the Qwen hosting question are unresolved. No paid model probes, provider fallback, credential requests or live generation requests were made during this research.
-
-## Conditions for adding an option
-
-Verify the exact ID, text/code capability, structured output contract, current token/cache prices, limits, region-specific endpoint and intended account access against official sources. Keep image, audio, realtime, transcription, translation and restricted specialist pipelines separate from code generation.
-
-Each provider needs a constrained endpoint and its own adapter for request fields, output parsing, refusal/error handling, token usage and caching. Do not change a base URL and assume Responses semantics. Preserve cancellation, bounded repairs, immutable job pricing, conservative reservations and unknown-outcome holds. Never retry or fall back to another paid provider silently.
-
-Studio already allows owner-configured `creditsPerBuild` and premium tiers. Customer credit charges are independent of provider token costs. Keep both configurable and do not invent a currency conversion or new customer balances.
+Fixture tests can verify endpoint constraints, payloads, usage parsing, cancellation and accounting. They do not verify live account access, output quality, provider billing or container enforcement. Keep credentials private on workers, leave newly offered choices disabled until the owner deliberately configures them, and disclose any separately authorized live acceptance test and its budget.

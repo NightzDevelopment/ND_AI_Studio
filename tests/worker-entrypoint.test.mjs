@@ -82,7 +82,7 @@ test('eval imports with no script argument remain side-effect free', t => {
   assert.equal(result.stderr, '');
 });
 
-for (const launch of ['direct', 'current']) {
+for (const launch of ['direct', 'current', 'deepseek']) {
   test(`${launch} worker launch reaches heartbeat and claim, then shuts down cleanly with fixtures`, t => {
     const f = fixture(t), bin = join(f.directory, 'bin');
     mkdirSync(bin);
@@ -99,6 +99,7 @@ for (const launch of ['direct', 'current']) {
         }
         if (url.pathname === '/api/worker/heartbeat') {
           const body = JSON.parse(options.body);
+          if (JSON.stringify(body.providers) !== JSON.stringify([process.env.TEST_EXPECTED_PROVIDER])) throw new Error('Provider readiness mismatch');
           appendFileSync(process.env.TEST_API_LOG, 'ready=' + body.ready + '\\n');
           return new Response(JSON.stringify({ ok: true }));
         }
@@ -111,7 +112,9 @@ for (const launch of ['direct', 'current']) {
       };
     `);
     const env = { ...f.env, PATH: `${bin}:${f.env.PATH}`, STUDIO_WORKER_TOKEN: 'a'.repeat(64),
-      OPENAI_API_KEY: 'fixture-only-not-a-real-api-key', VALIDATOR_IMAGE: image,
+      OPENAI_API_KEY: launch === 'deepseek' ? '' : 'fixture-only-not-a-real-api-key',
+      DEEPSEEK_API_KEY: launch === 'deepseek' ? 'fixture-only-not-a-deepseek-key' : '',
+      TEST_EXPECTED_PROVIDER: launch === 'deepseek' ? 'deepseek' : 'openai', VALIDATOR_IMAGE: image,
       TEST_DOCKER_LOG: dockerLog, TEST_API_LOG: apiLog };
     const script = join(launch === 'direct' ? f.release : f.current, 'worker/start.mjs');
     const result = f.run(['--import', pathToFileURL(preload).href, script], { env });

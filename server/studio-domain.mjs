@@ -92,6 +92,7 @@ export function migrateStudio(store) {
     CREATE TABLE IF NOT EXISTS studio_events (id INTEGER PRIMARY KEY, job_id TEXT NOT NULL REFERENCES studio_jobs(id), stage TEXT NOT NULL, message TEXT NOT NULL, created_at TEXT NOT NULL) STRICT;
     CREATE INDEX IF NOT EXISTS studio_events_job ON studio_events(job_id,id);
     CREATE TABLE IF NOT EXISTS studio_worker (id INTEGER PRIMARY KEY CHECK(id=1), checked_at INTEGER NOT NULL, ready INTEGER NOT NULL) STRICT;
+    CREATE TABLE IF NOT EXISTS studio_worker_providers (id INTEGER PRIMARY KEY CHECK(id=1), providers TEXT NOT NULL) STRICT;
   `));
   store.transaction(() => {
     const columns = new Set(store.db.prepare('PRAGMA table_info(studio_jobs)').all().map(column => column.name));

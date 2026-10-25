@@ -40,7 +40,7 @@ Known zero-usage failures and queued cancellations release reservations. Potenti
 
 ## Upgrade website and worker separately
 
-Merge the reviewed feature branch into `main` first. Let active builds finish before upgrading. Use the existing private environments and backup/rollback installers; do not copy environment files or rotate only one side of the worker token.
+Merge the reviewed feature branch into `main` first. Let active builds finish before upgrading. Upgrade the website before the worker, since the worker's new provider advertisements require the updated API. Use the existing private environments and backup/rollback installers; do not copy environment files or rotate only one side of the worker token.
 
 Website, in the existing root deployment session:
 
@@ -74,6 +74,8 @@ systemctl --user status nd-ai-worker.service --no-pager --full
 ```
 
 The current owner test worker is co-located on the website VPS under a dedicated non-root account. Preserve its rootless daemon, immutable validator image and cgroup limits. Do not restart unrelated website, Discord, PostgreSQL, Redis or rootful Docker services. Keep generation in Owner testing on this installation.
+
+OpenAI and DeepSeek keys are optional individually; the worker requires at least one. Keep OPENAI_API_KEY and DEEPSEEK_API_KEY only in its private environment. The installer reuses either saved key and preserves other settings. A provider-specific model can only queue while a matching healthy worker advertises its key presence. This is not a paid access probe or automatic fallback. Import new disabled presets in Control room, confirm their source/prices and API access, then choose availability and Studio credit charges deliberately.
 
 ## Validation and live acceptance
 
