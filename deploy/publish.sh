@@ -3,7 +3,7 @@ set -Eeuo pipefail
 # Publish built frontend assets only. Do not change SSH, firewall, DNS or proxy settings.
 root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 base="/srv/nd-ai-studio"
-files=(index.html styles.css app.js data.js catalog.json)
+files=(index.html styles.css app.js data.js catalog.json account.js account.css controls.js)
 for file in "${files[@]}"; do
     [[ -f "$root/dist/$file" && ! -L "$root/dist/$file" ]] || { echo "Missing or unsafe build file: $file" >&2; exit 1; }
 done

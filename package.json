@@ -1,13 +1,14 @@
 {
   "name": "nd-ai-studio",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
-  "description": "Original ND AI Studio frontend and project brief workspace",
-  "engines": { "node": ">=22" },
+  "description": "ND AI Studio accounts and creation workspace",
+  "engines": { "node": ">=22.16.0" },
   "scripts": {
     "build": "node scripts/build.mjs",
     "start": "node scripts/build.mjs && node scripts/serve.mjs",
+    "start:api": "node server/start.mjs",
     "test": "node --test tests/*.test.mjs"
   }
 }

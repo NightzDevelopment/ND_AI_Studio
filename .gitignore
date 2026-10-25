@@ -23,3 +23,9 @@ artifacts/
 Thumbs.db
 .idea/
 .vscode/
+
+# Account databases and local snapshots
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.sqlite-journal

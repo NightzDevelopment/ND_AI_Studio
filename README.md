@@ -1,25 +1,28 @@
 # ND AI Studio
 
-Nightz Development's original FiveM creation workspace. Intended domain: `ai.nightz.dev`.
+Nightz Development's original FiveM creation workspace at `ai.nightz.dev`.
 
-## Release 0.1: frontend foundation
+## Release 0.2: Discord accounts
 
-This release contains a runnable, dependency-free web frontend, not a connected AI platform. All 24 generation, conversion and browsing tools remain explicitly planned and disabled.
+Implemented:
 
-Available now:
+- Server-side Discord authorization-code login with PKCE and browser-bound, single-use state.
+- Private profiles with a Discord avatar, username, editable display name and bio.
+- Saved default framework and comfortable/compact workspace density.
+- Persistent, private account briefs with create/edit/delete, search, sorting and JSON export.
+- Optional idempotent import of existing browser-local briefs. Browser originals are never deleted.
+- Custom keyboard-operable dropdowns, an account menu and confirmation dialogs.
+- Hashed server sessions, CSRF/origin checks, ownership checks, revision conflict protection and rate limits.
+- Sign out, sign out everywhere, and account data export.
+- A separate localhost API service and a scoped upgrade for the existing Nginx site.
 
-- Original responsive dark interface with ND red accents and mobile navigation.
-- Searchable 24-tool catalog, category filtering and tool detail dialogs.
-- Browser-local project briefs with creation, editing, deletion and JSON export.
-- Framework selection for coding briefs, without treating ox_lib as a framework.
-- A readiness view that distinguishes the frontend from unimplemented services.
-- Node build/preview tooling, catalog/storage tests and deployment files for `ai.nightz.dev`.
+All 24 generation/conversion/browsing tools remain planned and disabled. There is no AI generation, worker execution, billing, public profile directory or community publishing yet. A brief is requirements data, not a generated resource.
 
-Not implemented: authentication, server-side project persistence, AI providers, job queues, sandbox workers, generated resources, asset converters, billing or community publishing. No generated files, build logs, progress, credits or user activity are simulated. A saved brief is requirements data, not a generated project.
+Discord login uses the same identity provider as the Nightz website, not a shared website session or shared store database. Store purchases, licenses, membership benefits and staff permissions are not imported. The website repository is unchanged.
 
-## Run locally
+## Runtime
 
-Use Node.js 22 or newer. There are no third-party runtime or build dependencies and no install step.
+Node.js 22.16 or newer. No npm dependencies or install step are required.
 
 ```bash
 npm test
@@ -27,38 +30,62 @@ npm run build
 npm start
 ```
 
-The preview listens only on `http://127.0.0.1:3080`. Set `PORT` to change the port. Production serves the built `dist` directory, never the repository root. See [deployment instructions](deploy/README.md).
+`npm start` keeps the existing static development preview. Account features require `npm run start:api` behind a same-origin proxy. Production uses the supplied Nginx configuration and systemd service, not the development preview.
 
-## Project briefs
+The account API uses Node's built-in `node:sqlite` with WAL, foreign keys, parameterized queries and transactional imports. The SQLite API is experimental on Node 22; the tested runtime is Node 22.16 and the target VPS already has Node 22.23.1. Keep a supported patched Node release and verify updates before rollout. This is a bounded, single-process account service, not the planned distributed generation backend. Future multi-node execution should use the separately planned shared data/queue infrastructure.
 
-Briefs stay in this browser under `nd-ai-studio.briefs.v1`. They are not synced to an account or the server. Export important briefs before clearing browser data or changing devices. Maximum: 100 briefs, 80 characters per name and 12,000 characters per requirements field.
+## Deploy accounts
 
-Do not store credentials or confidential customer material in briefs. The frontend does not contact an AI provider. Invalid stored data blocks writes rather than silently deleting it. Local storage is not an account database or a transactional multi-user system.
+See [the account deployment guide](deploy/ACCOUNTS.md). Register this exact additional OAuth redirect on the Discord application:
 
-## Source layout
+```text
+https://ai.nightz.dev/auth/discord/callback
+```
 
-- `web/`: semantic HTML, modular JavaScript and custom CSS. No UI framework or copied templates.
-- `config/tools.json`: authoritative tool catalog and availability flags.
-- `scripts/`: build and localhost-only preview server.
-- `tests/`: catalog, filtering and storage validation tests.
-- `deploy/`: Caddy site block and an asset-only release publisher.
-- `docs/`: product scope, original design system, proposed backend and roadmap.
-- `assets/design/`: initial AI-generated visual reference. It is not a product screenshot.
+The installer prompts for the OAuth client ID and secret privately in the SSH terminal. Do not paste them into chat, a repository, project briefs or frontend code. A bot token is not needed.
 
-The backend architecture remains a proposal. This frontend does not create a security boundary for future execution workers.
+```bash
+cd /opt/nd-ai-studio
+git pull --ff-only origin main
+bash deploy/setup-accounts.sh
+```
+
+The installer expects the existing Ubuntu/Nginx layout and working certificate for `ai.nightz.dev`. It tests before publishing, snapshots an existing SQLite database, retains application releases and backs up the modified Nginx site and service files. Only the Studio virtual host gets new API routes and the Discord avatar image-source allowance. Other site files and the bot's PostgreSQL/Redis containers are not changed.
+
+## Data and sessions
+
+- Account data: `/var/lib/nd-ai-studio/studio.sqlite`, outside the web root and repository.
+- Private configuration: `/etc/nd-ai-studio.env`, mode 0600.
+- Service: `nd-ai-studio.service`, dynamic non-root user, bound to `127.0.0.1:3081`.
+- Public assets: `/srv/nd-ai-studio/current`.
+- Backend releases: `/srv/nd-ai-studio/backend/releases`.
+- Sessions expire after seven days, with at most ten active sessions per user.
+- Account limits: 100 briefs, 80-character names, 12,000-character requirements, 500-character bio.
+- Guest briefs remain under `nd-ai-studio.briefs.v1` in browser storage. Import is opt-in and keeps local copies.
+
+Profiles are private. Only the `identify` OAuth scope is requested. Discord access/refresh tokens are not stored. User passwords, email, guild lists and messages are not requested. The host-only session cookie is separate from the store's cookies.
 
 ## Verification
 
-Six Node tests, JavaScript syntax checks and Bash syntax checks passed during preparation. The production build completed. Browser end-to-end checks and live deployment have not been verified in this environment. Do not treat the presence of a deployment config as proof that DNS, TLS or the server is configured.
+Automated tests cover OAuth state binding/replay/expiry, secure session cookies, CSRF, ownership, optimistic revisions, transactional imports, logout, input limits, database persistence and the existing catalog/storage behavior. Browser fixture checks cover profile saving against the real local API, guest and account briefs, custom keyboard dropdowns, confirmations, menus and responsive layouts. These use a seeded test identity, not a real Discord authorization.
 
-## Design reference
+Live Discord authorization, systemd installation and Nginx deployment must still be verified on the VPS after credentials are configured. No test fixture or test sign-in endpoint is included in the production service.
 
-![Initial ND dashboard concept](assets/design/nd-ai-studio-dashboard.webp)
+## Source layout
 
-This concept image contains illustrative projects, credit balances and controls that are not implemented. The actual frontend uses text, CSS and semantic controls rather than rendering the image as the application.
+- `web/`: original semantic HTML, modular JavaScript and custom CSS.
+- `server/`: account API, Discord OAuth adapter, configuration and SQLite store.
+- `config/tools.json`: authoritative 24-tool catalog; all engines remain disabled.
+- `tests/`: Node tests.
+- `scripts/`: approved-asset build and static preview tooling.
+- `deploy/`: deployment, backup, Nginx patch and systemd files.
+- `docs/`: original design, product scope and proposed later platform architecture.
+- `assets/design/`: illustrative concept artwork, not a product screenshot.
+
+No UI frameworks, copied templates or generated fake build logs are used.
 
 ## Security and licensing
 
-Never commit API keys, Discord tokens, SSH credentials, customer uploads or production databases. Provider calls and generated-code execution must be implemented behind authenticated server-side services with isolation and ownership checks.
+Never commit API keys, Discord tokens, SSH credentials, customer uploads or production databases. Run generated code only in a future isolated worker system, never in this account service.
 
-No open-source license has been selected. Do not redistribute third-party assets without permission. Preserve source, author, license and attribution requirements for future imports.
+No open-source license has been selected. Third-party assets need their own permissions, attribution and provenance.
