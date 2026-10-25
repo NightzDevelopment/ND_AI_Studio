@@ -1,7 +1,10 @@
 import { refreshSelects, confirmAction } from './controls.js';
+import { createModelControls } from './models.js';
 const $=id=>document.getElementById(id);
-const state={ session:null, capabilities:null, catalog:null, projects:[], project:null, selected:null, tabs:[], drafts:new Map(), jobs:[], job:null, briefList:[], editingProject:false, fileMode:'new', managedUser:null, adminTab:null, settings:null, review:null, route:location.hash || '#projects', pollBusy:false, capabilitiesAt:0 };
+const state={ session:null, capabilities:null, catalog:null, projects:[], project:null, selected:null, tabs:[], drafts:new Map(), jobs:[], job:null, briefList:[], editingProject:false, fileMode:'new', managedUser:null, adminTab:null, settings:null, review:null, route:location.hash || '#projects', pollBusy:false, capabilitiesAt:0, buildSubmitting:false };
 let toastTimer, routeSequence=0, highlightFrame=0;
+let pendingBuildRequest=null;
+const models=createModelControls({api,el,button,field,selectField,table,notice,confirmAction,reasonDialog,onChange:renderBuilds});
 function el(tag,className,text) { const node=document.createElement(tag);if(className)node.className=className;if(text!==undefined)node.textContent=text;return node; }
 function button(label,action,className='') { const node=el('button',className,label);node.type='button';node.addEventListener('click',()=>task(node,action));return node; }
 function link(label,href,className='') { const node=el('a',className,label);node.href=href;return node; }
@@ -95,14 +98,15 @@ $('history-button').addEventListener('click',()=>task($('history-button'),async(
 function renderBuilds(){
   if(!state.project)return;const allowed=state.capabilities?.tools.find(tool=>tool.id===state.project.tool_id),active=state.jobs.some(job=>['queued','running'].includes(job.status));
   $('build-notice').textContent=!allowed?'This tool has no generation engine yet. You can still manage its source files.':!allowed.enabled?'The owner has not enabled this generator for your account.':!state.capabilities.workerReady?'Waiting for a configured isolated worker. Source editing and exports are available.':'Generates a proposal, checks syntax, and stops for your review. Runtime behavior still needs testing.';
-  $('generate-button').disabled=!allowed?.enabled||!state.capabilities.workerReady||active||Boolean(state.project.archived);
-  $('build-history').replaceChildren(...state.jobs.map(job=>{const node=button(`${job.status.toUpperCase()} / ${new Date(job.createdAt).toLocaleTimeString()}`,async()=>{state.job=(await api(`/api/jobs/${job.id}`)).job;renderBuilds();});node.classList.toggle('active',state.job?.id===job.id);return node;}));
+  $('generate-button').disabled=!allowed?.enabled||!state.capabilities.workerReady||active||Boolean(state.project.archived)||state.buildSubmitting||!models.available();
+  models.render(active||state.buildSubmitting);
+  $('build-history').replaceChildren(...state.jobs.map(job=>{const node=button(`${job.status.toUpperCase()} / ${job.modelLabel || job.model || 'Model'} / ${new Date(job.createdAt).toLocaleTimeString()}`,async()=>{state.job=(await api(`/api/jobs/${job.id}`)).job;renderBuilds();});node.classList.toggle('active',state.job?.id===job.id);return node;}));
   $('build-state').textContent=state.job?.status || 'Idle';$('cancel-build').hidden=!state.job||!['queued','running'].includes(state.job.status);$('review-button').hidden=!state.job?.result?.files;
   if(!state.job){$('build-log').replaceChildren(el('p','','No build selected. Logs appear when a worker performs real steps.'));return;}
   const nodes=state.job.events.map(event=>{const p=el('p');p.append(el('strong','',`${new Date(event.createdAt).toLocaleTimeString()} [${event.stage}] `),document.createTextNode(event.message));return p;});
   if(state.job.result?.checks)for(const check of state.job.result.checks)nodes.push(el('p','',check));
   if(state.job.result?.error)nodes.push(el('p','danger',state.job.result.error));
-  nodes.push(el('p','',`Usage: ${money(state.job.costMicros)} / reservation: ${money(state.job.reservedMicros)}. Interrupted calls can remain conservatively charged until provider billing is checked.`));
+  nodes.push(el('p','',`Model: ${state.job.modelLabel || state.job.model || 'Original configured model'}. API cost estimate: ${money(state.job.costMicros)} / reservation: ${money(state.job.reservedMicros)}. Provider invoices may differ. Studio credits: ${state.job.credits?.amount ?? 0} / ${state.job.credits?.state || 'not-used'}. Pending credits are holds, not finalized charges.`));
   $('build-log').replaceChildren(...nodes);
 }
 async function loadJobs(){
@@ -113,15 +117,25 @@ async function loadJobs(){
   if(capabilities){state.capabilities=capabilities;state.capabilitiesAt=Date.now();}
   const selected=state.job?.id, summary=jobs.find(job=>job.id===selected)||jobs[0]||null;state.jobs=jobs;
   if(!summary)state.job=null;
-  else if(!state.job||state.job.id!==summary.id||state.job.updatedAt!==summary.updatedAt||state.job.status!==summary.status){
+  else if(!state.job||state.job.id!==summary.id||state.job.updatedAt!==summary.updatedAt||state.job.status!==summary.status||state.job.credits?.state!==summary.credits?.state){
     const {job}=await api(`/api/jobs/${summary.id}`);if(state.project?.id!==id)return;state.job=job;
   }
+  await models.refresh();
   renderBuilds();
 }
 $('build-form').addEventListener('submit',event=>{event.preventDefault();task($('generate-button'),async()=>{
-  if(dirty())throw new Error('Save your source changes before starting a build.');
-  if(!await confirmAction('Send this project to the AI provider?','Only this project snapshot and your request are sent. The configured build budget and account limits apply. Generated changes will wait for your approval.','Start build'))return;
-  const {job}=await api(`/api/projects/${state.project.id}/jobs`,{method:'POST',body:{version:state.project.version,prompt:$('build-prompt').value.trim(),requestId:crypto.randomUUID()}});state.job=job;await loadJobs();notice('Build queued.');
+  if(state.buildSubmitting)return;
+  state.buildSubmitting=true;
+  try {
+    if(dirty())throw new Error('Save your source changes before starting a build.');
+    const projectId=state.project.id,version=state.project.version,prompt=$('build-prompt').value.trim(),quote=await models.prepare();
+    if(!await confirmAction('Confirm model and build cost',models.confirmation(quote),'Start build'))return;
+    if(state.project?.id!==projectId || state.project.version!==version || dirty())throw new Error('Project changed. Review it before generating.');
+    const payload={version,prompt,...quote},key=JSON.stringify({projectId,...payload});
+    if(!pendingBuildRequest || pendingBuildRequest.key!==key)pendingBuildRequest={key,requestId:crypto.randomUUID()};
+    const {job}=await api(`/api/projects/${projectId}/jobs`,{method:'POST',body:{...payload,requestId:pendingBuildRequest.requestId}});
+    pendingBuildRequest=null;state.job=job;await models.refresh(true);await loadJobs();notice('Build queued.');
+  } finally {state.buildSubmitting=false;renderBuilds();}
 });});
 $('cancel-build').addEventListener('click',()=>task($('cancel-build'),async()=>{if(!await confirmAction('Cancel this build?','The worker will stop when cancellation is detected. Provider requests already accepted may still be billed.','Cancel build'))return;await api(`/api/jobs/${state.job.id}/cancel`,{method:'POST',body:{}});await loadJobs();}));
 function showReview(before,after,summary,job,href){
@@ -134,11 +148,12 @@ $('review-file').addEventListener('change',renderDiff);
 $('review-button').addEventListener('click',()=>task($('review-button'),async()=>{const job=state.job,{project}=await api(`/api/projects/${state.project.id}/revisions?version=${job.baseVersion}`);showReview(project.files,job.result.files,job.result.summary,job,`/api/jobs/${job.id}/export`);}));
 $('apply-proposal').addEventListener('click',()=>task($('apply-proposal'),async()=>{if(dirty())throw new Error('Save or discard unsaved changes before applying a proposal.');if(!await confirmAction('Apply these changes?','The reviewed files become a new revision only if the project still matches the build snapshot.','Apply proposal'))return;const result=await api(`/api/jobs/${state.review.job.id}/apply`,{method:'POST',body:{version:state.project.version}});setProject(result.project,true);$('review-dialog').close();renderEditor();await loadJobs();notice('Proposal applied as a new project revision.');}));
 async function admin(tab){
-  const definitions=[['users','Users','users:read'],['projects','Projects','projects:read'],['tools','Tools','tools:manage'],['settings','Settings','settings:manage'],['audit','Audit log','audit:read']].filter(([, ,permission])=>state.capabilities.permissions.includes(permission));
+  const definitions=[['users','Users','users:read'],['projects','Projects','projects:read'],['tools','Tools','tools:manage'],['settings','Settings','settings:manage'],['models','Models & credits','settings:manage'],['audit','Audit log','audit:read']].filter(([id, ,permission])=>state.capabilities.permissions.includes(permission)&&(id!=='models'||state.capabilities.owner));
   if(!definitions.length)throw new Error('This account has no administration permissions.');
   tab=definitions.some(item=>item[0]===tab)?tab:definitions[0][0];state.adminTab=tab;
   $('admin-tabs').replaceChildren(...definitions.map(([id,label])=>{const node=button(label,()=>admin(id));node.setAttribute('role','tab');node.setAttribute('aria-selected',String(id===tab));return node;}));
   const root=$('admin-content');root.replaceChildren(el('p','muted','Loading controls...'));
+  if(tab==='models'){await models.renderAdmin(root);return;}
   if(tab==='settings'){await settingsPanel(root);return;}
   if(tab==='tools'){const data=await api('/api/admin/tools');root.replaceChildren();const card=el('div','admin-card');card.append(el('h2','','Generator access'),el('p','','Only implemented generators can be enabled. Members mode is an owner-only release decision. A healthy worker and model configuration are still required.'));
     for(const id of Object.keys(data.tools)){const control=selectField(toolName(id),[['disabled','Disabled'],['owner','Owner testing'],['members','Members']],data.tools[id],id),row=el('div','toolbar');row.append(control.label,button('Save mode',async()=>{await api('/api/admin/tools',{method:'PATCH',body:{toolId:id,mode:control.input.value,version:data.version}});notice('Tool access updated.');state.capabilities=await api('/api/studio/session');await admin('tools');},'primary'));card.append(row);}root.append(card);refreshSelects(root);return;}
@@ -152,7 +167,8 @@ async function settingsPanel(root){
   const data=await api('/api/admin/settings');state.settings=data.settings;const form=el('form'),grid=el('div','settings-grid');root.replaceChildren(form);form.append(grid);
   const discord=el('section','admin-card');discord.append(el('h2','','Discord connection'),el('p','',`${data.botConfigured?'Bot token configured':'Bot token not configured'}. Credentials stay in the private server environment, never in this form.`));
   const guild=field('Discord guild ID','text',data.settings.guildId,'guildId');guild.input.maxLength=20;discord.append(guild.label,button('Test connection',async()=>{const result=await api('/api/admin/discord/test',{method:'POST',body:{}});notice(`Connected as ${result.bot.username} in ${result.guild.name}.`);}));
-  const provider=el('section','admin-card');provider.append(el('h2','','Generation limits'),el('p','',`${data.workerReady?'A worker is connected.':'No healthy worker is connected.'} Enter current model prices from your provider. Cost reservations are conservative estimates, not a billing guarantee.`));
+  const provider=el('section','admin-card');provider.append(el('h2','','Legacy single-model settings'),el('p','',`${data.workerReady?'A worker is connected.':'No healthy worker is connected.'} Enter current model prices from your provider. Cost reservations are conservative estimates, not a billing guarantee.`));
+  provider.append(el('p','notice','Use Models & credits to add multiple models and per-model pricing. Once that catalog is saved, these legacy model fields no longer control new builds.'));
   const controls={guildId:guild.input};for(const [name,label,type,min,max,step] of [['model','Model identifier','text'],['maxOutputTokens','Maximum output tokens','number',512,16384,1],['maxCalls','Maximum model calls per build','number',1,2,1],['budget','Maximum budget per build (USD)','number',.01,10,.01],['inputUsdPerMillion','Input USD per million tokens','number',0,1000,.000001],['outputUsdPerMillion','Output USD per million tokens','number',0,1000,.000001]]){const value=name==='budget'?data.settings.maxBudgetMicros/1000000:data.settings[name],f=field(label,type,value,name);if(min!==undefined){f.input.min=min;f.input.max=max;f.input.step=step;}controls[name]=f.input;provider.append(f.label);}grid.append(discord,provider);
   const roles=el('section','admin-card');roles.append(el('h2','','Discord role permissions'),el('p','','Only the explicit server-side Discord user-ID allowlist grants owner access. Role lookups fail closed; sensitive staff changes refresh membership before authorization.'));
   const rows=el('div');function addRole(id='',permissions=[]){const row=el('div','role-row'),f=field('Role ID','text',id,'role');f.input.maxLength=20;f.input.required=true;const permissionsGrid=el('div','permission-grid');for(const permission of data.permissions){const label=el('label','check'),input=el('input');input.type='checkbox';input.value=permission;input.checked=permissions.includes(permission);label.append(input,document.createTextNode(permission));permissionsGrid.append(label);}row.append(f.label,permissionsGrid,button('Remove mapping',()=>row.remove(),'danger'));rows.append(row);}
@@ -184,6 +200,6 @@ setInterval(async()=>{if(document.hidden||state.pollBusy||!state.project||$('edi
 try{
   [state.session,state.catalog]=await Promise.all([api('/api/session'),api('/catalog.json')]);
   refreshSelects();
-  if(state.session.user){state.capabilities=await api('/api/studio/session');$('profile-link').textContent=state.session.user.displayName;$('new-project').disabled=false;$('admin-nav').hidden=!state.capabilities.permissions.length;document.body.classList.toggle('compact',state.session.user.density==='compact');}
+  if(state.session.user){await models.refresh(true);state.capabilities=await api('/api/studio/session');$('profile-link').textContent=state.session.user.displayName;$('new-project').disabled=false;$('admin-nav').hidden=!state.capabilities.permissions.length;document.body.classList.toggle('compact',state.session.user.density==='compact');}
   await renderRoute();
 }catch(failure){show('login');error(failure.message);}

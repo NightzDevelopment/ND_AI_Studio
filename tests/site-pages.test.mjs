@@ -11,7 +11,7 @@ import { deploymentProbes, validateProbe } from '../deploy/verify-accounts.mjs';
 const indexFixture = '<html><head></head><body><a class="brand"><span class="brand-mark">N<span>D</span></span>AI STUDIO</a><footer>Nightz Development</footer></body></html>';
 const workspaceFixture = '<html><head></head><body><a class="brand"><b>N<span>D</span></b>AI STUDIO</a><a class="primary" href="/auth/discord">Continue with Discord</a><p class="fine muted">This request and the current project\'s source are sent to the configured AI provider. Never include credentials.</p><footer>Nightz Development</footer></body></html>';
 const accountFixture = 'const view = `<div class="identity-symbol" aria-hidden="true">ND</div><a id="discord-login" class="primary discord-login" href="/auth/discord" hidden>Continue with Discord <span aria-hidden="true">↗</span></a>`;';
-const published = ['index.html','styles.css','app.js','data.js','catalog.json','account.js','account.css','controls.js','workspace.html','workspace.css','workspace.js','branding.css','legal.css','nd-logo.webp','favicon.png','favicon.ico','policies.html','terms.html','privacy.html','acceptable-use.html'];
+const published = ['index.html','styles.css','app.js','data.js','catalog.json','account.js','account.css','controls.js','workspace.html','workspace.css','workspace.js','models.js','models.css','branding.css','legal.css','nd-logo.webp','favicon.png','favicon.ico','policies.html','terms.html','privacy.html','acceptable-use.html'];
 const pages = renderPolicyPages();
 
 test('three policy drafts and their overview render as standalone static HTML', () => {
@@ -91,7 +91,7 @@ test('template marker drift and repeat processing fail rather than silently dupl
 test('non-presentation assets are returned without changes', () => {
   const source = 'export const value = "unchanged";\n';
   assert.equal(renderSiteAsset('app.js', source), source);
-  assert.equal(renderSiteAsset('workspace.js', source), source);
+  for (const file of ['workspace.js', 'models.js', 'models.css']) assert.equal(renderSiteAsset(file, source), source);
 });
 
 test('logo and favicons have real image signatures and distinct ICO size entries', async () => {
@@ -109,13 +109,13 @@ test('logo and favicons have real image signatures and distinct ICO size entries
   }
 });
 
-test('publish and HTTPS readiness include all 20 assets, including policy and branding files', async t => {
+test('publish and HTTPS readiness include all 22 assets, including policy and branding files', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'nd-brand-ready-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   await mkdir(join(directory, 'dist'));
   for (const file of published) await writeFile(join(directory, 'dist', file), file);
   const probes = await deploymentProbes('frontend', pathToFileURL(directory + '/'));
-  assert.equal(probes.length, 20);
+  assert.equal(probes.length, 22);
   assert.deepEqual(probes.map(probe => new URL(probe.url).pathname.slice(1)), published);
   const publisher = await readFile(new URL('../deploy/publish.sh', import.meta.url), 'utf8');
   assert.deepEqual(publisher.match(/^files=\(([^)]+)\)/m)[1].split(' '), published);

@@ -2,9 +2,9 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { realpathSync } from 'node:fs';
 import { generate, providerPayload, reserveFor } from './provider.mjs';
-import { validate, validatorReady } from './validate.mjs';
+import { validate, validatorReady, validateEnvironment } from './validate.mjs';
 
-export async function runJob(job,{ key,image,api,generator=generate,validator=validate,signal }={}) {
+export async function runJob(job,{ key,image,api,generator=generate,validator=validate,preflight=validateEnvironment,signal }={}) {
   const controller=new AbortController();
   const abort=()=>controller.abort(); signal?.addEventListener('abort',abort,{once:true});
   if (signal?.aborted) controller.abort();
@@ -15,10 +15,13 @@ export async function runJob(job,{ key,image,api,generator=generate,validator=va
     try { await progress(); } catch { controller.abort(); } finally { heartbeatBusy=false; }
   },10000);
   try {
+    controller.signal.throwIfAborted();
+    await progress('checking','Checking validator readiness before any paid provider request.');
+    await preflight(job.project.tool_id,{image,signal:controller.signal});
     let files=job.project.files,summary='',checks=[];
     for (let attempt=0;attempt<job.settings.maxCalls;attempt++) {
       controller.signal.throwIfAborted();
-      await progress(attempt ? 'repairing' : 'generating',attempt ? 'Repairing reported syntax or packaging errors within the remaining budget.' : 'Sending the approved project snapshot to the AI provider.');
+      await progress(attempt ? 'repairing' : 'generating',attempt ? 'Repairing reported syntax or packaging errors within the remaining budget.' : `Sending the approved project snapshot to OpenAI model ${job.settings.model}.`);
       if (reserveFor(providerPayload(job,files,checks),job.settings)+cost > job.settings.maxBudgetMicros) {
         await api('/api/worker/complete',{...auth,costMicros:cost,result:{error:'The conservative cost estimate exceeds the remaining build budget. No further provider request was sent.'}}); return;
       }
@@ -27,6 +30,9 @@ export async function runJob(job,{ key,image,api,generator=generate,validator=va
       uncertain=false; cost+=generated.cost; files=generated.files; summary=generated.summary;
       await progress('checking','Checking project structure and syntax in an offline, resource-limited container.');
       const result=await validator(files,job.project.tool_id,{image,signal:controller.signal}); checks=result.checks;
+      if (result.kind === 'infrastructure') {
+        const failure=new Error('Validator infrastructure failed. No AI repair was requested.'); failure.status=503; throw failure;
+      }
       if (result.ok) {
         await progress('packaging','Preparing the file proposal for review. No project files have been overwritten.');
         await api('/api/worker/complete',{...auth,costMicros:cost,result:{files,summary,checks}}); return;
@@ -35,6 +41,9 @@ export async function runJob(job,{ key,image,api,generator=generate,validator=va
     await api('/api/worker/complete',{...auth,costMicros:cost,result:{error:`Validation did not pass within the call limit. ${checks.filter(check=>!check.includes('passed')&&!check.startsWith('Not tested')).slice(0,3).join(' ').slice(0,700)}`}});
   } catch (error) {
     // Unknown provider outcomes retain the full reservation. Cancellation never claims a refund.
+    if (uncertain && Number.isSafeInteger(error?.providerCostMicros) && error.providerCostMicros>=0) {
+      cost+=error.providerCostMicros; uncertain=false;
+    }
     const reported=uncertain ? Math.max(cost,job.settings.maxBudgetMicros) : cost;
     const message=controller.signal.aborted ? 'Worker interrupted or build access revoked. Provider work already accepted may still be billed.' : (error?.status ? error.message : 'Build failed. No automatic retry was attempted; inspect the worker configuration and provider billing.');
     await api('/api/worker/complete',{...auth,costMicros:reported,result:{error:message.slice(0,1000)}}).catch(()=>{});

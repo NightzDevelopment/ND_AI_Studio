@@ -18,7 +18,13 @@ export function providerPayload(job, files, diagnostics = []) {
 }
 export function price(usage, settings) {
   insist(Number.isSafeInteger(usage?.input_tokens) && usage.input_tokens >= 0 && Number.isSafeInteger(usage?.output_tokens) && usage.output_tokens >= 0,502,'The provider did not report usable token counts.');
-  return Math.ceil(usage.input_tokens * settings.inputUsdPerMillion + usage.output_tokens * settings.outputUsdPerMillion);
+  const cached=usage.input_tokens_details?.cached_tokens ?? 0;
+  insist(Number.isSafeInteger(cached) && cached>=0 && cached<=usage.input_tokens,502,'The provider returned invalid cached token counts.');
+  const cachedRate=settings.cachedInputUsdPerMillion ?? settings.inputUsdPerMillion;
+  // output_tokens already includes reasoning tokens; do not add them twice.
+  const cost=Math.ceil((usage.input_tokens-cached) * settings.inputUsdPerMillion + cached * cachedRate + usage.output_tokens * settings.outputUsdPerMillion);
+  insist(Number.isSafeInteger(cost) && cost>=0,502,'The provider usage cost could not be safely calculated.');
+  return cost;
 }
 export function reserveFor(payload, settings) {
   // One byte per input token plus framing headroom is a deliberately conservative estimate, not a billing guarantee.
@@ -37,11 +43,12 @@ export async function generate(job, files, { key, signal, spent=0, diagnostics=[
   insist(reserve+spent <= job.settings.maxBudgetMicros,409,'The conservative cost estimate exceeds this build budget. Reduce project size or ask the owner to adjust the limit.');
   const response=await fetcher('https://api.openai.com/v1/responses',{
     method:'POST', redirect:'error', headers:{ authorization:`Bearer ${key}`,'content-type':'application/json' },
-    body:JSON.stringify(payload), signal:AbortSignal.any([signal || new AbortController().signal,AbortSignal.timeout(180000)]),
+    body:JSON.stringify(payload), signal:AbortSignal.any([signal || new AbortController().signal,AbortSignal.timeout((job.settings.timeoutSeconds ?? 180)*1000)]),
   });
   // Do not retry POSTs automatically: an interrupted request may already have incurred usage.
   insist(response.ok,502,`AI provider request failed (${response.status}). It was not automatically retried.`);
   const data=await readLimited(response,2097152), cost=price(data.usage,job.settings);
+  try {
   insist(data.status === 'completed',502,'The provider response was incomplete. Increase the output limit or reduce the request.');
   const content=(data.output || []).flatMap(item=>item.type === 'message' ? item.content || [] : []);
   insist(!content.some(item=>item.type === 'refusal'),422,'The provider declined this request.');
@@ -51,4 +58,5 @@ export async function generate(job, files, { key, signal, spent=0, diagnostics=[
   const next=changedFiles(files,output.changes);
   insist(next.length>0,502,'The provider returned an empty project.');
   return { files:next,summary:output.summary,cost };
+  } catch (error) { error.providerCostMicros=cost; throw error; }
 }

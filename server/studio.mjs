@@ -1,9 +1,11 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { StudioError, insist, fields, string, integer, digest, validateFiles, filePath, migrateStudio, studioSettings, settingsData, control, audit, event, project, snapshot, saveRevision, newProject, zipFiles, IMPLEMENTED_TOOLS, PERMISSIONS } from './studio-domain.mjs';
+import { createModels } from './studio-models.mjs';
 import { memberRoles, discordRequest } from './studio-discord.mjs';
 
 export function createStudio({ store, config, catalog, required, mutation, readJson, json, fetcher = fetch }) {
   migrateStudio(store);
+  const models = createModels({store,actor,readJson,json});
   const owners = new Set(config.ownerIds || []);
   const isOwner = user => Boolean(user && owners.has(user.discord_id));
   const blocked = id => control(store, id).status === 'suspended';
@@ -29,7 +31,7 @@ export function createStudio({ store, config, catalog, required, mutation, readJ
     return IMPLEMENTED_TOOLS.includes(toolId) && (mode === 'members' || (mode === 'owner' && isOwner(user)));
   }
   function jobView(row, details = true) {
-    return { id: row.id, projectId: row.project_id, baseVersion: row.base_version, prompt: details ? row.prompt : undefined, status: row.status,
+    return { ...models.describe(row), id: row.id, projectId: row.project_id, baseVersion: row.base_version, prompt: details ? row.prompt : undefined, status: row.status,
       costMicros: row.cost, reservedMicros: row.reserve, createdAt: row.created_at, updatedAt: row.updated_at,
       result: details && row.result ? JSON.parse(row.result) : null,
       events: details ? store.db.prepare('SELECT id,stage,message,created_at AS createdAt FROM studio_events WHERE job_id=? ORDER BY id').all(row.id) : [] };
@@ -55,6 +57,8 @@ export function createStudio({ store, config, catalog, required, mutation, readJ
     if (!/^\/api\/(?:studio|projects|jobs|admin|worker)(?:\/|$)/.test(path)) return false;
     try {
       expireJobs();
+      models.recover();
+      if (await models.route(req,res,url)) return true;
       if (path.startsWith('/api/worker/')) {
         workerAuth(req);
         insist(method === 'POST',405,'Use POST for worker requests.');
@@ -75,7 +79,7 @@ export function createStudio({ store, config, catalog, required, mutation, readJ
             for (const row of rows) {
               const p = project(store,row.user_id,row.project_id), user = store.user(row.user_id);
               if (blocked(user.id) || p.archived || !allowed(p.tool_id,user)) {
-                store.db.prepare("UPDATE studio_jobs SET status='cancelled',updated_at=? WHERE id=?").run(new Date().toISOString(),row.id); continue;
+                store.db.prepare("UPDATE studio_jobs SET status='cancelled',updated_at=? WHERE id=?").run(new Date().toISOString(),row.id); models.settle(row.id,'released'); continue;
               }
               const lease = randomBytes(32).toString('base64url');
               store.db.prepare("UPDATE studio_jobs SET status='running',lease=?,lease_until=?,updated_at=? WHERE id=? AND status='queued'").run(digest(lease),Date.now()+120000,new Date().toISOString(),row.id);
@@ -112,6 +116,7 @@ export function createStudio({ store, config, catalog, required, mutation, readJ
           store.transaction(() => {
             workerJob(body);
             store.db.prepare('UPDATE studio_jobs SET status=?,result=?,cost=?,lease=NULL,updated_at=? WHERE id=?').run(status,JSON.stringify(result),cost,new Date().toISOString(),row.id);
+            models.settle(row.id,status === 'review' ? 'charged' : cost === 0 ? 'released' : 'pending');
             event(store,row.id,status,status === 'review' ? 'Files are ready for review. In-game behavior has not been tested.' : result.error);
           });
           json(res,200,{ ok:true }); return true;
@@ -265,22 +270,23 @@ export function createStudio({ store, config, catalog, required, mutation, readJ
           json(res,200,{ project:saved }); return true;
         }
         if (method === 'POST' && action === 'jobs') {
-          fields(body,['version','prompt','requestId']); const prompt=string(body.prompt,12000,'build request');
+          fields(body,['version','prompt','requestId','modelId','pricingVersion','quotedCredits']); const prompt=string(body.prompt,12000,'build request');
           insist(typeof body.requestId === 'string' && /^[a-f0-9-]{36}$/.test(body.requestId),400,'Invalid build request ID.');
           const duplicate=store.db.prepare('SELECT * FROM studio_jobs WHERE user_id=? AND request_id=?').get(a.user.id,body.requestId);
-          if (duplicate) { insist(duplicate.project_id === row.id && duplicate.prompt === prompt,409,'This request ID belongs to another build.'); json(res,200,{ job:jobView(duplicate) }); return true; }
+          if (duplicate) { insist(duplicate.project_id === row.id && duplicate.prompt === prompt && (body.modelId === undefined || JSON.parse(duplicate.settings).model === body.modelId),409,'This request ID belongs to another build.'); json(res,200,{ job:jobView(duplicate) }); return true; }
           insist(row.version === body.version,409,'Project changed. Reload before generating.');
           insist(allowed(row.tool_id,a.user),403,'This generator is not enabled for your account.');
           insist(workerReady(),503,'No healthy isolated worker is connected.');
-          const s=studioSettings(store); insist(s.model && s.inputUsdPerMillion > 0 && s.outputUsdPerMillion > 0,503,'The owner must configure a model and current prices first.');
           const id=randomBytes(16).toString('hex'), now=new Date().toISOString();
           store.transaction(() => {
+            const s=models.select(body);
             const limits=control(store,a.user.id), day=now.slice(0,10);
             const usage=store.db.prepare("SELECT count(*) n,coalesce(sum(CASE WHEN status IN ('queued','running') THEN reserve ELSE cost END),0) cost FROM studio_jobs WHERE user_id=? AND created_at>=?").get(a.user.id,day);
             insist(usage.n < limits.daily_limit && usage.cost+s.maxBudgetMicros <= limits.daily_budget,429,'Your daily build or spending limit has been reached.');
             insist(!store.db.prepare("SELECT 1 FROM studio_jobs WHERE user_id=? AND status IN ('queued','running')").get(a.user.id),409,'Finish or cancel your active build first.');
             insist(store.db.prepare("SELECT count(*) n FROM studio_jobs WHERE status IN ('queued','running')").get().n < 20,503,'The build queue is full.');
             store.db.prepare('INSERT INTO studio_jobs(id,user_id,project_id,request_id,base_version,prompt,settings,reserve,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)').run(id,a.user.id,row.id,body.requestId,row.version,prompt,JSON.stringify(s),s.maxBudgetMicros,now,now);
+            models.reserve(id,a.user.id,s);
             event(store,id,'queued','Build queued. Only this project snapshot and request will be sent to the configured AI provider.');
           }); json(res,202,{ job:jobView(store.db.prepare('SELECT * FROM studio_jobs WHERE id=?').get(id)) }); return true;
         }
@@ -297,6 +303,7 @@ export function createStudio({ store, config, catalog, required, mutation, readJ
         if (method === 'POST' && jm[2] === 'cancel') {
           store.transaction(() => {
             insist(store.db.prepare("UPDATE studio_jobs SET status='cancelled',cost=CASE WHEN status='running' THEN reserve ELSE 0 END,lease=NULL,updated_at=? WHERE id=? AND status IN ('queued','running')").run(new Date().toISOString(),job.id).changes,409,'This build is no longer running.');
+            models.settle(job.id,job.status === 'queued' ? 'released' : 'pending');
             event(store,job.id,'cancelled','Cancellation requested. Any provider work already accepted may still be billed.');
           }); json(res,200,{ ok:true }); return true;
         }

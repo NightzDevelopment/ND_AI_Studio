@@ -41,15 +41,15 @@ test('validator cleans its container and temporary source after an interrupted D
   await assert.rejects(validate(files,'ai-script-generator',{image,runner}));assert.ok(calls.some(args=>args[0]==='rm'&&args[1]==='-f'));await assert.rejects(access(directory));
 });
 test('worker completes a reviewed result without executing or applying it',async()=>{
-  const calls=[];await runJob(job,{key:'test-provider-key',image,api:async(path,body)=>{calls.push({path,body});return {};},generator:async()=>({files,summary:'Source prepared',cost:500}),validator:async()=>({ok:true,checks:['Syntax passed.','Not tested: in-game behavior.']})});
+  const calls=[];await runJob(job,{preflight:async()=>{},key:'test-provider-key',image,api:async(path,body)=>{calls.push({path,body});return {};},generator:async()=>({files,summary:'Source prepared',cost:500}),validator:async()=>({ok:true,checks:['Syntax passed.','Not tested: in-game behavior.']})});
   const complete=calls.find(call=>call.path==='/api/worker/complete');assert.equal(complete.body.costMicros,500);assert.deepEqual(complete.body.result.files,files);assert.equal(calls.some(call=>call.path.includes('/apply')),false);
 });
 test('worker repairs once and never exceeds the configured call count',async()=>{
-  let generated=0,checked=0;const calls=[];await runJob(job,{image,api:async(path,body)=>{calls.push({path,body});return {};},generator:async()=>{generated++;return {files,summary:'Prepared',cost:100};},validator:async()=>({ok:++checked===2,checks:['file.lua: syntax failed.']})});assert.equal(generated,2);assert.equal(calls.at(-1).body.costMicros,200);
+  let generated=0,checked=0;const calls=[];await runJob(job,{preflight:async()=>{},image,api:async(path,body)=>{calls.push({path,body});return {};},generator:async()=>{generated++;return {files,summary:'Prepared',cost:100};},validator:async()=>({ok:++checked===2,checks:['file.lua: syntax failed.']})});assert.equal(generated,2);assert.equal(calls.at(-1).body.costMicros,200);
 });
 test('worker keeps full reservation for an unknown provider outcome',async()=>{
-  const calls=[];await runJob(job,{image,api:async(path,body)=>{calls.push({path,body});return {};},generator:async()=>{throw new Error('Network lost after sending request');}});assert.equal(calls.at(-1).body.costMicros,settings.maxBudgetMicros);assert.ok(calls.at(-1).body.result.error);
+  const calls=[];await runJob(job,{preflight:async()=>{},image,api:async(path,body)=>{calls.push({path,body});return {};},generator:async()=>{throw new Error('Network lost after sending request');}});assert.equal(calls.at(-1).body.costMicros,settings.maxBudgetMicros);assert.ok(calls.at(-1).body.result.error);
 });
 test('worker does not spend or call the provider when the estimate cannot fit',async()=>{
-  const calls=[];let requested=false;await runJob({...job,settings:{...settings,maxBudgetMicros:1}},{image,api:async(path,body)=>{calls.push({path,body});return {};},generator:async()=>{requested=true;}});assert.equal(requested,false);assert.equal(calls.at(-1).body.costMicros,0);
+  const calls=[];let requested=false;await runJob({...job,settings:{...settings,maxBudgetMicros:1}},{preflight:async()=>{},image,api:async(path,body)=>{calls.push({path,body});return {};},generator:async()=>{requested=true;}});assert.equal(requested,false);assert.equal(calls.at(-1).body.costMicros,0);
 });
