@@ -13,7 +13,7 @@ export function createModelControls({api,el,button,field,selectField,table,notic
   function render(locked=false) {
     select.disabled=locked || !data?.models.length;
     const model=chosen();
-    summary.textContent=model ? `${model.tier.toUpperCase()} / ${data.creditsEnabled?`${model.creditsPerBuild} credits per completed proposal`:'Studio credit deductions are off'}. API estimate cap: $${(model.maxBudgetMicros/1000000).toFixed(2)} per build.` : 'No model selected. Configure coding models in Control room.';
+    summary.textContent=model ? `${model.tier.toUpperCase()} / ${data.creditsEnabled?`${model.creditsPerBuild} credits per completed build`:'Studio credit deductions are off'}. API estimate cap: $${(model.maxBudgetMicros/1000000).toFixed(2)} per build.` : 'No model selected. Configure coding models in Control room.';
     const w=data?.wallet;
     balance.textContent=w ? `${w.available} credits available / ${w.reserved} reserved / ${w.pending} pending review` : 'Loading model settings...';
     details.disabled=!data;
@@ -41,7 +41,7 @@ export function createModelControls({api,el,button,field,selectField,table,notic
   }
   function confirmation(quote) {
     const model=chosen();
-    return `${model.label} (${model.id}). ${data.creditsEnabled?`${quote.quotedCredits} Studio credits are reserved now and charged when a completed proposal is delivered. Failed or interrupted builds with possible API usage await owner review.`:'No Studio credits will be deducted.'} API estimate cap: $${(model.maxBudgetMicros/1000000).toFixed(2)}. Your current project snapshot and request are sent to OpenAI. Changes still require your approval.`;
+    return `${model.label} (${model.id}). ${data.creditsEnabled?`${quote.quotedCredits} Studio credits are reserved now and charged when a validated build is delivered. Failed or interrupted builds with possible API usage await owner review.`:'No Studio credits will be deducted.'} API estimate cap: $${(model.maxBudgetMicros/1000000).toFixed(2)}. Your current project snapshot and request are sent to OpenAI. Validated output saves a new project revision automatically when its source revision still matches. A conflict preserves the finished output without overwriting newer source. This never deploys or runs the generated code.`;
   }
   async function showHistory() {
     const result=await api('/api/studio/credits'), dialog=el('dialog','wide'), heading=el('h2','','Studio credit history');
@@ -58,7 +58,7 @@ export function createModelControls({api,el,button,field,selectField,table,notic
     const form=el('form','model-catalog-form'), rows=el('div','model-cards');
     const charge=check('Enforce Studio credits for new builds',config.creditsEnabled);
     const defaults=selectField('Default coding model',[['','Choose a default model']],config.defaultModelId,'defaultModelId');
-    const header=el('section','admin-card');header.append(charge.label,el('p','fine muted','Off by default. Enabling requires real owner-granted balances. No checkout, purchases, exchange rate or credit expiry is configured. Successful proposals consume the displayed fixed model charge; zero-usage failures release their hold. Other failed or interrupted outcomes require owner reconciliation.'),defaults.label);
+    const header=el('section','admin-card');header.append(charge.label,el('p','fine muted','Off by default. Enabling requires real owner-granted balances. No checkout, purchases, exchange rate or credit expiry is configured. Validated builds consume the displayed fixed model charge; zero-usage failures release their hold. Other failed or interrupted outcomes require owner reconciliation.'),defaults.label);
     form.append(header,rows);root.append(form);
     const editors=[];
     function updateDefaults(){
@@ -72,7 +72,7 @@ export function createModelControls({api,el,button,field,selectField,table,notic
       const card=el('details','admin-card model-card');card.open=!model.id;
       const title=el('summary','',model.label || 'New OpenAI model');card.append(title);
       const grid=el('div','model-fields'), controls={};
-      const definitions=[['id','Exact API model ID','text'],['label','Display name','text'],['inputUsdPerMillion','Input USD / 1M tokens','number',0,10000,.000001],['cachedInputUsdPerMillion','Cached input USD / 1M','number',0,10000,.000001],['outputUsdPerMillion','Output USD / 1M tokens','number',0,10000,.000001],['creditsPerBuild','Credits / completed proposal','number',0,1000000,1],['maxOutputTokens','Maximum output tokens','number',512,65536,1],['maxCalls','Maximum calls per build','number',1,2,1],['budget','API estimate cap / build (USD)','number',.01,100,.01],['timeoutSeconds','Request timeout (seconds)','number',30,900,1]];
+      const definitions=[['id','Exact API model ID','text'],['label','Display name','text'],['inputUsdPerMillion','Input USD / 1M tokens','number',0,10000,.000001],['cachedInputUsdPerMillion','Cached input USD / 1M','number',0,10000,.000001],['outputUsdPerMillion','Output USD / 1M tokens','number',0,10000,.000001],['creditsPerBuild','Credits / completed build','number',0,1000000,1],['maxOutputTokens','Maximum output tokens','number',512,65536,1],['maxCalls','Maximum calls per build','number',1,2,1],['budget','API estimate cap / build (USD)','number',.01,100,.01],['timeoutSeconds','Request timeout (seconds)','number',30,900,1]];
       for(const [name,text,type,min,max,step] of definitions){const f=field(text,type,name==='budget'?model.maxBudgetMicros/1000000:model[name],name);f.input.required=true;if(min!==undefined){f.input.min=min;f.input.max=max;f.input.step=step;}else f.input.maxLength=name==='id'?100:80;controls[name]=f.input;grid.append(f.label);}
       const tier=selectField('Tier',[['budget','Budget'],['standard','Standard'],['premium','Premium']],model.tier,'tier');controls.tier=tier.input;grid.append(tier.label);
       const enabled=check('Available in the model selector',model.enabled), compatible=check('I verified Responses API + structured JSON support and API-project access',model.compatible);controls.enabled=enabled.input;controls.compatible=compatible.input;

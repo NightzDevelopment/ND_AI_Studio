@@ -4,7 +4,7 @@ Nightz Development's original FiveM creation workspace at `ai.nightz.dev`.
 
 ## Release 0.3: source workspaces and controlled generation
 
-Studio now includes private source projects, an owner control room, Discord role mappings and a separate AI proposal worker. The existing Discord login, profiles and account briefs remain in place.
+Studio now includes private source projects, an owner control room, Discord role mappings and a separate AI build worker. The existing Discord login, profiles and account briefs remain in place.
 
 ### Available in the application
 
@@ -17,9 +17,11 @@ Studio now includes private source projects, an owner control room, Discord role
 
 ### Generation requires configuration
 
-The Script Generator and Discord Bot Generator have a real Responses API and worker path: queue, conservative budget reservation, persistent events, syntax/packaging checks, bounded repair, cancellation, comparison and explicit application of proposed files.
+The Script Generator and Discord Bot Generator have a real Responses API and worker path: queue, conservative budget reservation, persistent events, syntax/packaging checks, bounded repair, cancellation and automatic saving as a new project revision. Successful builds populate the explorer and editor without another Apply click. Optional comparison, revision history, restore and ZIP exports remain available.
 
-Both generators are disabled by default. They require a configured model and prices, private provider credentials on a separate build host, a healthy rootless Docker validator, and owner-selected access. No generated source executes in the account API. Validation is not an FXServer or Discord runtime test.
+Automatic saving requires the project's saved revision to still match the build snapshot. A conflict or source-storage limit keeps the validated output available for comparison and download. Browser drafts remain separate from incoming saved source. See [automatic build completion](docs/AUTOMATIC_BUILDS.md) for the lifecycle, recovery and upgrade checks.
+
+Both generators are disabled by default. They require a configured model and prices, private worker credentials, a healthy rootless Docker validator, and owner-selected access. The current owner test deployment uses a dedicated non-root worker account on the same VPS; that is process/account separation, not a separate physical host. Keep this deployment in Owner testing. Use a separate build host before wider untrusted use. No generated source executes in the account API. Validation is not an FXServer or Discord runtime test.
 
 The remaining 22 catalog engines are still planned. There is no billing, public gallery, paid-credit system, 3D generation, animation export or shared Nightz store session in this release. No fake credits, progress events or activity records are used.
 
@@ -30,7 +32,7 @@ Full instructions and security boundaries are in [deploy/STUDIO.md](deploy/STUDI
 On the existing website VPS:
 
 ```bash
-cd /opt/nd-ai-studio
+cd /home/nd-ai-studio
 git pull --ff-only origin main
 bash deploy/setup-studio.sh
 ```
@@ -51,7 +53,7 @@ npm start
 
 `npm start` is a static local preview. Account and workspace APIs require `npm run start:api` behind the same-origin proxy. Production uses the supplied systemd and Nginx deployment, not the development preview.
 
-The separate generation worker uses `npm run start:worker` with its private environment and pinned rootless validator. Follow the dedicated-host instructions before starting it.
+The generation worker uses `npm run start:worker` with its private environment and pinned rootless validator. Follow the worker instructions before starting it; the website and worker releases must both be upgraded for automatic completion recovery.
 
 Tests cover existing accounts, deployment readiness, ownership, CSRF, revisions, unsafe source paths, permission boundaries, spending reservations, worker leases, cancellation, provider response validation and container invocation constraints. Provider/Docker fixtures are not proof of live provider success or container enforcement. Complete a live acceptance test before making generation available to members.
 
@@ -68,7 +70,7 @@ Studio does not share the Nightz website's database, sessions, purchases, licens
 - Account API: `nd-ai-studio.service`, dynamic non-root user, localhost port 3081.
 - Public assets: `/srv/nd-ai-studio/current`.
 - Backend release pointers: `/srv/nd-ai-studio/backend/current`.
-- Private worker configuration, on its separate host: `~/.config/nd-ai-worker.env`.
+- Private worker configuration, under the dedicated worker account: `~/.config/nd-ai-worker.env`.
 
 SQLite uses WAL, foreign keys, parameterized queries and transactions. Node's SQLite API is experimental on the tested Node 22 runtime. This is a bounded single-server database and one logical build worker, not a distributed multi-node service.
 

@@ -40,7 +40,7 @@ test('validator cleans its container and temporary source after an interrupted D
   const runner=async(command,args)=>{calls.push(args);if(args[0]==='info')return {stdout:JSON.stringify({SecurityOptions:['name=rootless'],CgroupVersion:'2',CgroupDriver:'systemd'})};if(args[0]==='image')return {stdout:image};if(args[0]==='run'){directory=args[args.indexOf('--mount')+1].split(',src=')[1].split(',dst=')[0];await access(directory);throw new Error('Timed out');}return {stdout:''};};
   await assert.rejects(validate(files,'ai-script-generator',{image,runner}));assert.ok(calls.some(args=>args[0]==='rm'&&args[1]==='-f'));await assert.rejects(access(directory));
 });
-test('worker completes a reviewed result without executing or applying it',async()=>{
+test('worker submits validated files for server finalization without executing source',async()=>{
   const calls=[];await runJob(job,{preflight:async()=>{},key:'test-provider-key',image,api:async(path,body)=>{calls.push({path,body});return {};},generator:async()=>({files,summary:'Source prepared',cost:500}),validator:async()=>({ok:true,checks:['Syntax passed.','Not tested: in-game behavior.']})});
   const complete=calls.find(call=>call.path==='/api/worker/complete');assert.equal(complete.body.costMicros,500);assert.deepEqual(complete.body.result.files,files);assert.equal(calls.some(call=>call.path.includes('/apply')),false);
 });

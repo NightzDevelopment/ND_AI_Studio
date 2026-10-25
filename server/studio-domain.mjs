@@ -93,6 +93,15 @@ export function migrateStudio(store) {
     CREATE INDEX IF NOT EXISTS studio_events_job ON studio_events(job_id,id);
     CREATE TABLE IF NOT EXISTS studio_worker (id INTEGER PRIMARY KEY CHECK(id=1), checked_at INTEGER NOT NULL, ready INTEGER NOT NULL) STRICT;
   `));
+  store.transaction(() => {
+    const columns = new Set(store.db.prepare('PRAGMA table_info(studio_jobs)').all().map(column => column.name));
+    for (const [name, definition] of [
+      ['application_mode', "TEXT NOT NULL DEFAULT 'review' CHECK(application_mode IN ('automatic','review'))"],
+      ['applied_version', 'INTEGER'], ['application_error', 'TEXT'],
+      ['completion_lease', 'TEXT'], ['completion_hash', 'TEXT'],
+    ]) if (!columns.has(name)) store.db.exec(`ALTER TABLE studio_jobs ADD COLUMN ${name} ${definition}`);
+    store.db.prepare("UPDATE studio_jobs SET applied_version=base_version+1 WHERE status='applied' AND applied_version IS NULL").run();
+  });
   store.db.prepare('INSERT OR IGNORE INTO studio_settings(id,value) VALUES(1,?)').run(JSON.stringify(DEFAULT_SETTINGS));
 }
 export function studioSettings(store) {
@@ -105,9 +114,12 @@ export function control(store, userId) {
 export function audit(store, actor, action, target, detail = '') {
   store.db.prepare('INSERT INTO studio_audit(actor,action,target,detail,created_at) VALUES(?,?,?,?,?)').run(actor, action, target, detail.slice(0, 500), new Date().toISOString());
 }
-export function event(store, jobId, stage, message) {
+export function event(store, jobId, stage, message, terminal = false) {
   const count = store.db.prepare('SELECT count(*) n FROM studio_events WHERE job_id=?').get(jobId).n;
-  insist(count < 100, 409, 'Build event limit reached.');
+  if (terminal && count >= 100) {
+    // Retain the latest progress while ensuring a full log cannot prevent finalization.
+    store.db.prepare('DELETE FROM studio_events WHERE id IN (SELECT id FROM studio_events WHERE job_id=? ORDER BY id DESC LIMIT -1 OFFSET 99)').run(jobId);
+  } else insist(count < 100, 409, 'Build event limit reached.');
   store.db.prepare('INSERT INTO studio_events(job_id,stage,message,created_at) VALUES(?,?,?,?)').run(jobId, stage, message.slice(0, 1000), new Date().toISOString());
 }
 export function project(store, userId, id) {

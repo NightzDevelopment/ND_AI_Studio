@@ -85,12 +85,31 @@ test('duplicate enqueue requests do not reserve twice or switch the captured mod
   const again=await f.request(`/api/projects/${p.id}/jobs`,'POST',body,f.member);assert.equal(again.status,200);assert.equal(again.data.job.id,response.data.job.id);assert.equal((await f.wallet()).reserved,5);
   assert.equal((await f.request(`/api/projects/${p.id}/jobs`,'POST',{...body,modelId:'test-premium'},f.member)).status,409);
 });
-test('successful proposal charges once; application and duplicate completion do not charge again',async t=>{
+test('automatic completion charges once; application and duplicate completion do not charge again',async t=>{
   const f=fixture(t);await f.catalog();await f.grant();const p=await f.create();await f.queue(p);
   const job=(await f.worker('claim',{})).data.job;assert.equal((await f.complete(job)).status,200);
   assert.equal((await f.wallet()).balance,45);assert.equal((await f.wallet()).reserved,0);
-  assert.equal((await f.complete(job)).status,409);assert.equal((await f.request(`/api/jobs/${job.id}/apply`,'POST',{version:1},f.member)).status,200);
+  assert.equal((await f.complete(job)).status,200);assert.equal((await f.request(`/api/jobs/${job.id}/apply`,'POST',{version:1},f.member)).status,200);
   assert.equal((await f.wallet()).balance,45);assert.equal(f.store.db.prepare("SELECT count(*) n FROM studio_credit_ledger WHERE kind='charged'").get().n,1);
+  assert.equal(f.store.db.prepare('SELECT count(*) n FROM studio_revisions WHERE project_id=?').get(p.id).n,2);
+});
+test('validated conflict output is delivered and charged once while newer source stays intact',async t=>{
+  const f=fixture(t);await f.catalog();await f.grant();const p=await f.create();await f.queue(p);const job=(await f.worker('claim',{})).data.job;
+  const edited=await f.request(`/api/projects/${p.id}/files`,'PUT',{version:1,path:'manual.lua',content:'print("manual")'},f.member);assert.equal(edited.status,200);
+  const done=await f.complete(job);assert.equal(done.data.status,'review');assert.match(done.data.applicationError,/Project changed/);
+  assert.equal((await f.wallet()).balance,45);assert.equal((await f.wallet()).reserved,0);
+  assert.equal((await f.complete(job)).status,200);assert.equal((await f.wallet()).balance,45);
+  const current=await f.request(`/api/projects/${p.id}`,'GET',null,f.member);assert.deepEqual(current.data.project.files,[{path:'manual.lua',content:'print("manual")'}]);
+  assert.equal(f.store.db.prepare("SELECT count(*) n FROM studio_credit_ledger WHERE kind='charged'").get().n,1);
+});
+test('settlement failure rolls back output, source revision and receipt before a safe retry',async t=>{
+  const f=fixture(t);await f.catalog();await f.grant();const p=await f.create();await f.queue(p);const job=(await f.worker('claim',{})).data.job;
+  f.store.db.exec("CREATE TRIGGER fail_charge BEFORE INSERT ON studio_credit_ledger WHEN NEW.kind='charged' BEGIN SELECT RAISE(ABORT,'fixture settlement failure'); END");
+  await assert.rejects(()=>f.complete(job),/fixture settlement failure/);
+  const interrupted=f.store.db.prepare('SELECT status,result,completion_hash FROM studio_jobs WHERE id=?').get(job.id);assert.equal(interrupted.status,'running');assert.equal(interrupted.result,null);assert.equal(interrupted.completion_hash,null);
+  assert.equal(f.store.db.prepare('SELECT version FROM studio_projects WHERE id=?').get(p.id).version,1);assert.equal((await f.wallet()).balance,50);assert.equal((await f.wallet()).reserved,5);
+  f.store.db.exec('DROP TRIGGER fail_charge');assert.equal((await f.complete(job)).data.status,'applied');assert.equal((await f.wallet()).balance,45);
+  assert.equal(f.store.db.prepare('SELECT count(*) n FROM studio_revisions WHERE project_id=?').get(p.id).n,2);
 });
 test('queued cancellation releases credits without a debit',async t=>{
   const f=fixture(t);await f.catalog();await f.grant();const p=await f.create(),r=(await f.queue(p)).response;
