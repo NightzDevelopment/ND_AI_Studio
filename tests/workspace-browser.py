@@ -1,17 +1,31 @@
 """Exercise the real workspace in Chromium against deterministic HTTP fixtures.
 Run after npm run build: python3 tests/workspace-browser.py
-Requires Playwright for Python and Chromium; no live login or provider calls.
+See docs/BROWSER_TESTS.md for isolated Playwright/Chromium setup.
+No live login or provider calls.
 """
 import copy
 import json
 import os
 from pathlib import Path
+import shutil
+import sys
 import threading
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 import unittest
 from urllib.parse import urlparse, parse_qs
 
-from playwright.sync_api import sync_playwright, expect
+try:
+    from playwright.sync_api import sync_playwright, expect
+except ModuleNotFoundError as failure:
+    if failure.name not in ('playwright', 'playwright.sync_api'):
+        raise
+    raise SystemExit(
+        'Browser checks require Python Playwright in the interpreter running this file.\n'
+        'Create a virtual environment and install tests/browser-requirements.txt there,\n'
+        'then run this file with that environment\'s Python.\n'
+        'Setup commands: docs/BROWSER_TESTS.md\n'
+        'This test-tool dependency is separate from the running API and worker.'
+    ) from None
 
 ROOT = Path(__file__).resolve().parents[1]
 PROJECT = '11111111-1111-4111-8111-111111111111'
@@ -163,7 +177,20 @@ class WorkspaceBrowserTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.playwright = sync_playwright().start()
-        cls.browser = cls.playwright.chromium.launch(executable_path=os.environ.get('CHROMIUM_PATH', '/usr/bin/chromium'), headless=True)
+        executable = (os.environ.get('CHROMIUM_PATH') or shutil.which('chromium')
+                      or shutil.which('chromium-browser'))
+        launch = {'headless': True}
+        if executable:
+            launch['executable_path'] = executable
+        try:
+            # With no system executable, Playwright selects its installed browser.
+            cls.browser = cls.playwright.chromium.launch(**launch)
+        except Exception:
+            cls.playwright.stop()
+            print('Browser startup failed. Install Chromium and its Linux dependencies; '
+                  'see docs/BROWSER_TESTS.md. CHROMIUM_PATH can select an existing browser.',
+                  file=sys.stderr)
+            raise
 
     @classmethod
     def tearDownClass(cls):

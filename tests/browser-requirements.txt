@@ -1,0 +1,2 @@
+# Development/browser checks only. No production API or worker dependency.
+playwright==1.62.0
