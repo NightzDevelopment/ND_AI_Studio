@@ -1,0 +1,25 @@
+# Secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Dependencies and build output
+node_modules/
+dist/
+build/
+coverage/
+*.log
+
+# Runtime data and user uploads
+runtime/
+workspaces/
+uploads/
+artifacts/
+
+# Local settings
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
