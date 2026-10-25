@@ -17,9 +17,11 @@ Studio now includes private source projects, an owner control room, Discord role
 
 ### Generation requires configuration
 
-The Script Generator and Discord Bot Generator have a real Responses API and worker path: queue, conservative budget reservation, persistent events, syntax/packaging checks, bounded repair, cancellation and automatic saving as a new project revision. Successful builds populate the explorer and editor without another Apply click. Optional comparison, revision history, restore and ZIP exports remain available.
+The Script Generator and Discord Bot Generator have real OpenAI and DeepSeek Responses adapters and a worker path: queue, conservative budget reservation, persistent events, syntax/packaging checks, bounded repair, cancellation and automatic saving as a new project revision. Successful builds populate the explorer and editor without another Apply click. Optional comparison, revision history, restore and ZIP exports remain available.
 
 Automatic saving requires the project's saved revision to still match the build snapshot. A conflict or source-storage limit keeps the validated output available for comparison and download. Browser drafts remain separate from incoming saved source. See [automatic build completion](docs/AUTOMATIC_BUILDS.md) for the lifecycle, recovery and upgrade checks.
+
+Control room offers five documented coding presets: GPT-6 Luna, GPT-6.1 Sol, GPT-6 Astra, DeepSeek Flash and DeepSeek V4 Pro. Importing a preset leaves it disabled until the owner confirms provider access and enables it. Each model has separate configurable token prices, budget limits and Studio credit charges. Provider documentation and current pricing evidence are in [the verification record](docs/PROVIDER_RESEARCH.md); no preset establishes live account access. Whether the selected Qwen platform hosts DeepSeek remains unverified.
 
 Both generators are disabled by default. They require a configured model and prices, private worker credentials, a healthy rootless Docker validator, and owner-selected access. The current owner test deployment uses a dedicated non-root worker account on the same VPS; that is process/account separation, not a separate physical host. Keep this deployment in Owner testing. Use a separate build host before wider untrusted use. No generated source executes in the account API. Validation is not an FXServer or Discord runtime test.
 

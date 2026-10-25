@@ -30,6 +30,10 @@ class Fixture:
         self.saves = 0
         self.user_id = USER
         self.admin = False
+        self.admin_models = False
+        self.models = [{'id': 'fixture-model', 'label': 'Fixture model', 'tier': 'standard', 'creditsPerBuild': 0, 'maxBudgetMicros': 500000}]
+        self.admin_config = None
+        self.saved_catalog = None
         self.delay_project = False
         self.delay_save = False
         self.save_requested = threading.Event()
@@ -72,9 +76,9 @@ class Fixture:
                     if path == '/api/session':
                         return self.send_json({'user': {'id': fixture.user_id, 'displayName': 'Browser tester', 'density': 'comfortable'}, 'csrf': 'fixture-csrf'})
                     if path == '/api/studio/session':
-                        return self.send_json({'owner': fixture.admin, 'permissions': ['audit:read'] if fixture.admin else [], 'workerReady': True, 'tools': [{'id': 'ai-script-generator', 'enabled': True}]})
+                        return self.send_json({'owner': fixture.admin, 'permissions': (['settings:manage', 'audit:read'] if fixture.admin_models else ['audit:read']) if fixture.admin else [], 'workerReady': True, 'tools': [{'id': 'ai-script-generator', 'enabled': True}]})
                     if path == '/api/studio/models':
-                        return self.send_json({'models': [{'id': 'fixture-model', 'label': 'Fixture model', 'tier': 'standard', 'creditsPerBuild': 0, 'maxBudgetMicros': 500000}], 'defaultModelId': 'fixture-model', 'pricingVersion': 1, 'creditsEnabled': False, 'wallet': {'available': 0, 'reserved': 0, 'pending': 0}})
+                        return self.send_json({'models': fixture.models, 'defaultModelId': fixture.models[0]['id'], 'pricingVersion': 1, 'creditsEnabled': False, 'wallet': {'available': 0, 'reserved': 0, 'pending': 0}})
                     if path == f'/api/projects/{PROJECT}':
                         return self.send_json({'project': fixture.project()})
                     if path == f'/api/projects/{PROJECT}/jobs':
@@ -87,6 +91,12 @@ class Fixture:
                             version = int(query['version'][0])
                             return self.send_json({'project': fixture.project(version)})
                         return self.send_json({'revisions': [{'version': version, 'summary': 'Fixture revision', 'createdAt': '2026-01-01T00:00:00.000Z'} for version in sorted(fixture.revisions, reverse=True)]})
+                    if path == '/api/admin/models':
+                        return self.send_json(fixture.admin_config)
+                    if path == '/api/admin/credits/pending':
+                        return self.send_json({'items': []})
+                    if path == '/api/admin/settings':
+                        return self.send_json({'settings': {'guildId': '', 'roleMappings': {}, 'model': '', 'version': 1, 'maxBudgetMicros': 500000}, 'permissions': [], 'workerReady': True})
                     if path == '/api/admin/audit':
                         return self.send_json({'items': [], 'next': None})
                     if path == '/api/projects':
@@ -97,6 +107,13 @@ class Fixture:
                 with fixture.lock:
                     fixture.applies += 1
                 return self.send_json({'error': 'No browser apply call is expected.'}, 500)
+
+            def do_PATCH(self):
+                body = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))))
+                with fixture.lock:
+                    fixture.saved_catalog = body
+                    fixture.admin_config.update(body)
+                return self.send_json(fixture.admin_config)
 
             def do_PUT(self):
                 body = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))))
@@ -169,6 +186,94 @@ class WorkspaceBrowserTests(unittest.TestCase):
     def open(self):
         self.page.goto(self.fixture.url)
         expect(self.page.locator('#editor-view')).to_be_visible()
+
+    def test_provider_disclosure_names_deepseek_without_a_paid_request(self):
+        self.fixture.job['status'] = 'failed'
+        self.fixture.models[0].update(provider='deepseek', workerReady=True)
+        self.open()
+        expect(self.page.locator('.model-quote')).to_contain_text('DeepSeek')
+        self.page.locator('#build-prompt').fill('Fixture build request')
+        self.page.locator('#generate-button').click()
+        expect(self.page.locator('dialog[open]')).to_contain_text('sent to DeepSeek')
+        expect(self.page.locator('dialog[open]')).not_to_contain_text('sent to OpenAI')
+        self.assertEqual(self.fixture.applies, 0)
+        self.page.locator('dialog[open]').get_by_role('button', name='Cancel', exact=True).click()
+
+    def test_unavailable_provider_blocks_generation_and_dropdown_keyboard_skips_it(self):
+        self.fixture.job['status'] = 'failed'
+        self.fixture.models.append(dict(self.fixture.models[0], id='unavailable-model', label='Unavailable provider model', provider='deepseek', workerReady=False))
+        self.fixture.models.append(dict(self.fixture.models[0], id='available-model', label='Available provider model', provider='openai', workerReady=True))
+        self.open()
+        combo = self.page.get_by_role('combobox', name='Coding model', exact=True)
+        combo.click()
+        unavailable = self.page.get_by_role('option', name='DeepSeek / Unavailable provider model / standard / worker unavailable', exact=True)
+        expect(unavailable).to_have_attribute('aria-disabled', 'true')
+        unavailable.click()
+        expect(self.page.locator('select[name=modelId]')).to_have_value('fixture-model')
+        combo.press('ArrowDown')
+        combo.press('Enter')
+        expect(self.page.locator('select[name=modelId]')).to_have_value('available-model')
+        self.fixture.models[0]['workerReady'] = False
+        self.page.reload()
+        expect(self.page.locator('#generate-button')).to_be_disabled()
+        expect(self.page.locator('.model-quote')).to_contain_text('not ready on the worker')
+
+    def test_reviewed_preset_import_is_disabled_editable_and_preserves_existing_catalog(self):
+        self.fixture.admin = True
+        self.fixture.admin_models = True
+        base = dict(id='fixture-model', label='Existing model', provider='openai', tier='standard', enabled=True,
+                    compatible=True, inputUsdPerMillion=1, cachedInputUsdPerMillion=.1, outputUsdPerMillion=2,
+                    creditsPerBuild=7, maxOutputTokens=8192, maxCalls=2, maxBudgetMicros=500000, timeoutSeconds=180)
+        preset = dict(base, id='fixture-deepseek', label='Reviewed DeepSeek fixture', provider='deepseek',
+                      enabled=False, compatible=False, creditsPerBuild=12,
+                      cacheWritePolicy='provider-default', cacheWrite30mUsdPerMillion=None,
+                      cacheWrite12hUsdPerMillion=None, longContextThreshold=None,
+                      longContextInputMultiplier=1, longContextOutputMultiplier=1,
+                      verification={'checkedAt': '2026-10-25', 'sources': ['https://api-docs.deepseek.com/'],
+                                    'notes': 'Fixture verification notes shown before import.'})
+        openai_preset = dict(preset, id='fixture-openai-premium', label='Reviewed OpenAI fixture', provider='openai', cacheWritePolicy='disabled', longContextThreshold=272000, longContextInputMultiplier=2, longContextOutputMultiplier=1.5)
+        self.fixture.admin_config = dict(version=1, models=[base], presets=[preset, openai_preset], defaultModelId='fixture-model', creditsEnabled=False)
+        self.open()
+        self.page.locator('#admin-nav').click()
+        self.page.get_by_role('tab', name='Models & credits', exact=True).click()
+        self.page.get_by_role('combobox', name='Verified coding preset', exact=True).click()
+        self.page.get_by_role('option', name='DeepSeek / Reviewed DeepSeek fixture', exact=True).click()
+        expect(self.page.locator('.preset-evidence')).to_contain_text('2026-10-25')
+        expect(self.page.locator('.preset-evidence')).to_contain_text('Fixture verification notes shown before import.')
+        expect(self.page.locator('.preset-evidence a')).to_have_attribute('href', 'https://api-docs.deepseek.com/')
+        self.page.get_by_role('button', name='Add disabled preset', exact=True).click()
+        cards = self.page.locator('.model-card')
+        expect(cards).to_have_count(2)
+        imported = cards.nth(1)
+        expect(imported.get_by_label('Available in the model selector', exact=True)).not_to_be_checked()
+        expect(imported.get_by_label('I verified this provider adapter, structured output and account access', exact=True)).not_to_be_checked()
+        imported.locator('input[name=creditsPerBuild]').fill('18')
+        self.page.get_by_role('combobox', name='Verified coding preset', exact=True).click()
+        self.page.get_by_role('option', name='OpenAI / Reviewed OpenAI fixture', exact=True).click()
+        self.page.get_by_role('button', name='Add disabled preset', exact=True).click()
+        expect(cards).to_have_count(3)
+        self.page.get_by_role('button', name='Save model catalog', exact=True).click()
+        self.page.wait_for_function("document.getElementById('toast').textContent.includes('Model catalog saved')")
+        saved = self.fixture.saved_catalog
+        self.assertEqual(saved['defaultModelId'], 'fixture-model')
+        self.assertEqual(saved['creditsEnabled'], False)
+        self.assertEqual(saved['models'][0]['id'], 'fixture-model')
+        self.assertEqual(saved['models'][0]['creditsPerBuild'], 7)
+        self.assertEqual(saved['models'][1]['provider'], 'deepseek')
+        self.assertEqual(saved['models'][1]['creditsPerBuild'], 18)
+        self.assertEqual(saved['models'][1]['enabled'], False)
+        self.assertEqual(saved['models'][1]['compatible'], False)
+        self.assertIsNone(saved['models'][1]['cacheWrite30mUsdPerMillion'])
+        self.assertIsNone(saved['models'][1]['longContextThreshold'])
+        self.assertNotIn('verification', saved['models'][1])
+        self.assertEqual(saved['models'][2]['provider'], 'openai')
+        self.assertEqual(saved['models'][2]['cacheWritePolicy'], 'disabled')
+        self.assertEqual(saved['models'][2]['longContextThreshold'], 272000)
+        self.assertEqual(saved['models'][2]['longContextInputMultiplier'], 2)
+        self.assertEqual(saved['models'][2]['longContextOutputMultiplier'], 1.5)
+        self.assertEqual(saved['models'][2]['enabled'], False)
+        self.assertNotIn('verification', saved['models'][2])
+        self.assertEqual(self.fixture.applies, 0)
 
     def test_empty_project_populates_without_apply_and_keeps_optional_history(self):
         with self.fixture.lock:

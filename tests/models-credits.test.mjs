@@ -54,6 +54,51 @@ test('model validation rejects unsupported claims, unsafe prices and malformed c
   for(const patch of [{id:'../model'},{label:''},{tier:'unknown'},{compatible:false},{inputUsdPerMillion:0},{outputUsdPerMillion:NaN},{cachedInputUsdPerMillion:2},{maxCalls:3},{timeoutSeconds:901},{creditsPerBuild:1.5},{maxOutputTokens:999999},{apiKey:'not-allowed'}])assert.throws(()=>validateModel({...model(),...patch}));
   assert.equal(validateModel({...model(),id:'ft:test-custom:model-v1'}).id,'ft:test-custom:model-v1');
 });
+test('verified presets require explicit owner import and cannot silently alter existing models or balances',async t=>{
+  const f=fixture(t),before=(await f.request('/api/admin/models')).data;
+  assert.equal(before.models.length,1);assert.equal(before.defaultModelId,'test-legacy');
+  assert.equal(before.presets.length,5);
+  for(const {verification,...preset} of before.presets){
+    assert.equal(preset.enabled,false);assert.equal(preset.compatible,false);
+    assert.ok(verification.sources.every(url=>url.startsWith('https://')));
+    assert.equal(verification.checkedAt,'2026-10-25');
+    assert.doesNotThrow(()=>validateModel(preset));
+  }
+  assert.equal((await f.wallet()).balance,0);
+  assert.equal((await f.request('/api/studio/models','GET',null,f.member)).data.models.length,1);
+  assert.equal((await f.request('/api/admin/models','GET',null,f.member)).status,403);
+});
+test('provider and cache fields reject arbitrary destinations and unsupported accounting configurations',()=>{
+  assert.equal(validateModel(model()).provider,'openai');
+  for(const patch of [{provider:'qwen'},{provider:'https://elsewhere.invalid'},{endpoint:'https://elsewhere.invalid'},
+    {cacheWritePolicy:'free'},{cacheWrite30mUsdPerMillion:-1},{cacheWrite12hUsdPerMillion:NaN},
+    {longContextThreshold:0},{longContextInputMultiplier:0},{longContextOutputMultiplier:Infinity},
+    {longContextThreshold:null,longContextInputMultiplier:2},{provider:'deepseek',cacheWritePolicy:'disabled'}])assert.throws(()=>validateModel({...model(),...patch}));
+});
+test('selected provider, caching and long-context price bands stay frozen with the job',async t=>{
+  const f=fixture(t),presets=(await f.request('/api/admin/models')).data.presets;
+  const {verification,...definition}=presets.find(item=>item.id==='deepseek-flash');
+  const selected={...definition,enabled:true,compatible:true};
+  await f.catalog([selected]);await f.grant();
+  await f.worker('heartbeat',{ready:true,providers:['deepseek']});
+  const p=await f.create(),queued=await f.queue(p,f.member,selected.id);
+  assert.equal(queued.response.status,202);assert.equal(queued.response.data.job.provider,'deepseek');
+  assert.equal((await f.request('/api/studio/models','GET',null,f.member)).data.models[0].workerReady,true);
+  await f.catalog([{...selected,inputUsdPerMillion:3,creditsPerBuild:40}]);
+  const job=(await f.worker('claim',{})).data.job;
+  assert.equal(job.settings.provider,'deepseek');assert.equal(job.settings.inputUsdPerMillion,.30);
+  assert.equal(job.settings.cachedInputUsdPerMillion,.006);assert.equal(job.settings.creditsPerBuild,2);
+  assert.equal(job.settings.cacheWritePolicy,'provider-default');assert.equal(job.settings.longContextThreshold,null);
+  assert.equal((await f.complete(job)).status,200);assert.equal((await f.wallet()).balance,48);
+  const {verification:source,...openai}=presets.find(item=>item.id==='gpt-6.1-sol');
+  await f.catalog([{...openai,enabled:true,compatible:true}]);
+  await f.worker('heartbeat',{ready:true,providers:['openai']});
+  const project=await f.create(),next=await f.queue(project,f.member,openai.id);assert.equal(next.response.status,202);
+  const captured=(await f.worker('claim',{})).data.job.settings;
+  assert.equal(captured.cacheWritePolicy,'disabled');assert.equal(captured.cacheWrite30mUsdPerMillion,2.5);
+  assert.equal(captured.cacheWrite12hUsdPerMillion,5);assert.equal(captured.longContextThreshold,272000);
+  assert.equal(captured.longContextInputMultiplier,2);assert.equal(captured.longContextOutputMultiplier,1.5);
+});
 test('only the owner can change models, grants or credit settlements',async t=>{
   const f=fixture(t);for(const path of ['/api/admin/models','/api/admin/credits?discordId='+f.member.discord_id,'/api/admin/credits/pending'])assert.equal((await f.request(path,'GET',null,f.member)).status,403);
   assert.equal((await f.request('/api/studio/models','GET',null,null)).status,401);

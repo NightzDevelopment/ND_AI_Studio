@@ -1,7 +1,7 @@
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { realpathSync } from 'node:fs';
-import { generate, providerPayload, reserveFor } from './provider.mjs';
+import { generate, providerPayload, reserveFor, providerLabel, configuredProviders } from './provider.mjs';
 import { validate, validatorReady, validateEnvironment } from './validate.mjs';
 
 async function deliverCompletion(api,body,wait) {
@@ -34,7 +34,7 @@ export async function runJob(job,{ key,image,api,generator=generate,validator=va
     let files=job.project.files,summary='',checks=[];
     for (let attempt=0;attempt<job.settings.maxCalls;attempt++) {
       controller.signal.throwIfAborted();
-      await progress(attempt ? 'repairing' : 'generating',attempt ? 'Repairing reported syntax or packaging errors within the remaining budget.' : `Sending the approved project snapshot to OpenAI model ${job.settings.model}.`);
+      await progress(attempt ? 'repairing' : 'generating',attempt ? 'Repairing reported syntax or packaging errors within the remaining budget.' : `Sending the approved project snapshot to ${providerLabel(job.settings)} model ${job.settings.model}.`);
       if (reserveFor(providerPayload(job,files,checks),job.settings)+cost > job.settings.maxBudgetMicros) {
         completion={...auth,costMicros:cost,result:{error:'The conservative cost estimate exceeds the remaining build budget. No further provider request was sent.'}}; break;
       }
@@ -72,7 +72,8 @@ export async function main(env=process.env) {
   const origin=new URL(env.STUDIO_ORIGIN || 'https://ai.nightz.dev');
   if (origin.protocol!=='https:' || origin.username || origin.password || origin.pathname!=='/' || origin.search || origin.hash) throw new Error('STUDIO_ORIGIN must be an HTTPS origin.');
   if (!/^[a-f0-9]{64}$/.test(env.STUDIO_WORKER_TOKEN || '')) throw new Error('A private worker token is required.');
-  if (!env.OPENAI_API_KEY || /[\r\n]/.test(env.OPENAI_API_KEY)) throw new Error('Configure OPENAI_API_KEY privately on the worker.');
+  const providers=configuredProviders(env);
+  const keys={openai:env.OPENAI_API_KEY,deepseek:env.DEEPSEEK_API_KEY};
   await validatorReady(env.VALIDATOR_IMAGE);
   const stop=new AbortController(); for (const name of ['SIGINT','SIGTERM']) process.once(name,()=>stop.abort());
   const api=async(path,body)=>{
@@ -81,21 +82,25 @@ export async function main(env=process.env) {
     const raw=await response.text(); if (raw.length>2097152) throw new Error('Worker response is too large.'); return JSON.parse(raw);
   };
   let healthy=false;
-  const heartbeat=setInterval(()=>api('/api/worker/heartbeat',{ready:healthy}).catch(()=>{}),15000);
+  const heartbeat=setInterval(()=>api('/api/worker/heartbeat',{ready:healthy,providers}).catch(()=>{}),15000);
   try {
     while (!stop.signal.aborted) {
       try {
         await validatorReady(env.VALIDATOR_IMAGE); healthy=true;
-        await api('/api/worker/heartbeat',{ready:true});
+        await api('/api/worker/heartbeat',{ready:true,providers});
         const {job}=await api('/api/worker/claim',{});
-        if (job) await runJob(job,{key:env.OPENAI_API_KEY,image:env.VALIDATOR_IMAGE,api,signal:stop.signal});
+        if (job) {
+          const provider=job.settings.provider ?? 'openai';
+          if (!providers.includes(provider)) throw new Error('The claimed provider is not configured on this worker.');
+          await runJob(job,{key:keys[provider],image:env.VALIDATOR_IMAGE,api,signal:stop.signal});
+        }
         else await delay(3000,undefined,{signal:stop.signal});
       } catch {
         healthy=false;
         if (!stop.signal.aborted) { console.error('Worker unavailable. Check connectivity, credentials and isolated validator configuration.'); await delay(5000,undefined,{signal:stop.signal}).catch(()=>{}); }
       }
     }
-  } finally { clearInterval(heartbeat); await api('/api/worker/heartbeat',{ready:false}).catch(()=>{}); }
+  } finally { clearInterval(heartbeat); await api('/api/worker/heartbeat',{ready:false,providers}).catch(()=>{}); }
 }
 function isEntryPoint() {
   if (!process.argv[1]) return false;

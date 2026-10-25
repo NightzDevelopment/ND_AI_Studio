@@ -10,8 +10,10 @@ if(process.argv[1] && import.meta.url===pathToFileURL(process.argv[1]).href){
   try {
     if(process.argv[2]==='reset') await workerRequest('/api/worker/heartbeat',{ready:false});
     else if(process.argv[2]==='ready') {
+      const expected=[['openai','OPENAI_API_KEY'],['deepseek','DEEPSEEK_API_KEY']].filter(([,name])=>Boolean(process.env[name])).map(([id])=>id);
+      if(!expected.length)throw new Error('Configure at least one provider key privately before checking readiness.');
       const deadline=Date.now()+45000; let ready=false;
-      while(Date.now()<deadline){try{ready=(await workerRequest('/api/worker/status',{})).ready===true;}catch{}if(ready)break;await delay(1000);}
+      while(Date.now()<deadline){try{const status=await workerRequest('/api/worker/status',{});const providers=status.providers ?? ['openai'];ready=status.ready===true && Array.isArray(providers) && expected.every(id=>providers.includes(id));}catch{}if(ready)break;await delay(1000);}
       if(!ready)throw new Error('The worker did not report ready within 45 seconds.');
     } else throw new Error('Use reset or ready.');
     console.log('Worker connectivity check passed.');
