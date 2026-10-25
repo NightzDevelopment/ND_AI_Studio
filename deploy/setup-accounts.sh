@@ -20,7 +20,16 @@ fi
 if ! systemctl is-active --quiet nd-ai-studio.service && [[ -n "$(ss -H -ltn '( sport = :3081 )')" ]]; then
     echo 'Port 3081 is occupied by another service. Nothing changed.' >&2; exit 1
 fi
-nginx -t
+check_nginx() {
+    local output
+    output="$(nginx -t 2>&1)" || { printf '%s\n' "$output" >&2; return 1; }
+    printf '%s\n' "$output"
+    if grep -Fq 'conflicting server name "ai.nightz.dev"' <<<"$output"; then
+        echo 'Duplicate ai.nightz.dev server blocks must be resolved before deployment.' >&2
+        return 1
+    fi
+}
+check_nginx
 npm test
 npm run build
 staged="$(mktemp)"
@@ -53,17 +62,25 @@ rollback() {
     local code=$?
     trap - ERR
     set +e
+    printf '\nDeployment failed during: %s\n' "$phase" >&2
+    systemctl show nd-ai-studio.service --property=LoadState --property=ActiveState --property=SubState >&2
+    ss -H -ltn '( sport = :3081 )' >&2
+    cp -a "$site" "$backup_dir/failed-site"
+    [[ ! -e "$snippet" ]] || cp -a "$snippet" "$backup_dir/failed-snippet"
     cp -a "$backup_dir/site" "$site"
     if [[ -e "$backup_dir/snippet" ]]; then cp -a "$backup_dir/snippet" "$snippet"; else rm -f "$snippet"; fi
     if [[ -e "$backup_dir/unit" ]]; then cp -a "$backup_dir/unit" "$unit"; else systemctl disable --now nd-ai-studio.service; rm -f "$unit"; fi
     if [[ -n "$old_backend" ]]; then replace_link "$old_backend" "$base/current"; else rm -f "$base/current"; fi
     if [[ -n "$old_frontend" ]]; then replace_link "$old_frontend" /srv/nd-ai-studio/current; fi
     systemctl daemon-reload
-    if [[ $active_before -eq 1 ]]; then systemctl restart nd-ai-studio.service; else systemctl stop nd-ai-studio.service; fi
+    if [[ -e "$backup_dir/unit" ]]; then
+        if [[ $active_before -eq 1 ]]; then systemctl restart nd-ai-studio.service; else systemctl stop nd-ai-studio.service; fi
+    fi
     nginx -t && systemctl reload nginx
     printf '\nDeployment stopped. Prior configuration restored. Backup: %s\n' "$backup_dir" >&2
     exit "$code"
 }
+phase="backend installation"
 trap rollback ERR
 install -d -m 0755 "$base/releases" /etc/nginx/snippets
 release="$(mktemp -d "$base/releases/$(date -u +%Y%m%dT%H%M%SZ)-XXXXXX")"
@@ -76,19 +93,20 @@ replace_link "$release" "$base/current"
 systemctl daemon-reload
 systemctl enable nd-ai-studio.service
 systemctl restart nd-ai-studio.service
-healthy=0
-for attempt in {1..15}; do
-    if curl --noproxy '*' -fsS --max-time 2 http://127.0.0.1:3081/api/health > /dev/null; then healthy=1; break; fi
-    sleep 1
-done
-[[ $healthy -eq 1 ]] || { echo 'Account service health check failed.' >&2; false; }
+phase="backend readiness"
+node deploy/verify-accounts.mjs backend
 install -m 0644 deploy/nginx-api.conf "$snippet"
 install -m 0644 "$staged" "$site"
-nginx -t
+phase="Nginx configuration"
+check_nginx
 systemctl reload nginx
+# Reload signals the master; it does not wait for the new workers to accept requests.
+# Verify the API/auth routes before publishing a frontend that depends on them.
+phase="HTTPS API and auth readiness"
+node deploy/verify-accounts.mjs proxy
+phase="frontend publication"
 bash deploy/publish.sh
-curl --noproxy '*' -fsS --max-time 10 --resolve ai.nightz.dev:443:127.0.0.1 https://ai.nightz.dev/api/health
-printf '\n'
-curl --noproxy '*' -fsS --max-time 10 --resolve ai.nightz.dev:443:127.0.0.1 https://ai.nightz.dev/account.js > /dev/null
+phase="HTTPS frontend verification"
+node deploy/verify-accounts.mjs frontend
 trap - ERR
 printf '\nAccounts deployed. Visit https://ai.nightz.dev/#account\nBackup: %s\n' "$backup_dir"
