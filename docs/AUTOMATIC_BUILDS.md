@@ -88,7 +88,7 @@ find deploy -name '*.sh' -print0 | xargs -0 -r -n1 bash -n
 python3 tests/workspace-browser.py
 ```
 
-The browser command requires Python Playwright and Chromium (override the executable with `CHROMIUM_PATH` when needed). It runs the real frontend against deterministic local HTTP fixtures, with no live Discord login or paid provider calls.
+The browser command requires Python Playwright and Chromium. Use the [isolated browser-test setup](BROWSER_TESTS.md) before running it on another machine, and use the virtual environment's Python in place of `python3` above. These are development fixtures, separate from production service requirements and live deployment checks. The runner detects system Chromium or Playwright's downloaded browser; `CHROMIUM_PATH` selects an explicit executable. No live Discord login or paid provider calls are made.
 
 Tests include HTTP API/SQLite plus worker orchestration with fixture provider and validator implementations. A lost successful acknowledgement followed by API restart must still create one revision and one credit debit. These fixtures do not establish live provider access or rootless Docker enforcement.
 
