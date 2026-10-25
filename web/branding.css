@@ -1,0 +1,11 @@
+/* The supplied ND artwork is shared by the overview, account and source workspace. */
+.brand .nd-brand-logo,.nd-brand-logo{display:block;width:48px;height:48px;object-fit:contain;flex:0 0 48px}
+.identity-symbol.nd-brand-symbol{width:100px;height:100px;border:0;background:none;border-radius:0;box-shadow:none}
+.nd-brand-symbol .nd-brand-logo{width:100%;height:100%;object-fit:contain}
+.policy-links{display:flex;flex-wrap:wrap;align-items:center;gap:8px 16px;margin:0;padding:0}
+.policy-links a{display:inline-flex;min-height:32px;align-items:center;padding:2px 0;border:0;background:none;border-radius:0;font-size:11px;line-height:1.6;letter-spacing:0;color:#c1b5c1;text-decoration:underline;text-underline-offset:4px}
+.policy-links a:hover{background:none;color:#fff}.policy-links a:focus-visible{outline:2px solid #f04452;outline-offset:4px}
+.page-footer .policy-links,footer>.policy-links{flex-basis:100%}
+.policy-disclosure{max-width:560px;margin:12px auto;color:#bfb2c0;font-size:11px;line-height:1.8}
+.policy-disclosure a,.build-panel .fine a{color:#f6a5b7;text-decoration:underline;text-underline-offset:3px}
+@media(max-width:720px){.brand .nd-brand-logo{width:40px;height:40px;flex-basis:40px}.policy-links{gap:6px 14px}.policy-links a{font-size:11px}}
