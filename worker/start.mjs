@@ -1,5 +1,6 @@
 import { setTimeout as delay } from 'node:timers/promises';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
+import { realpathSync } from 'node:fs';
 import { generate, providerPayload, reserveFor } from './provider.mjs';
 import { validate, validatorReady } from './validate.mjs';
 
@@ -68,4 +69,12 @@ export async function main(env=process.env) {
     }
   } finally { clearInterval(heartbeat); await api('/api/worker/heartbeat',{ready:false}).catch(()=>{}); }
 }
-if (process.argv[1] && import.meta.url===pathToFileURL(process.argv[1]).href) main().catch(()=>{console.error('Worker startup failed. Check its private environment and rootless validator.');process.exitCode=1;});
+function isEntryPoint() {
+  if (!process.argv[1]) return false;
+  try {
+    // systemd launches through current; Node normally resolves that release symlink.
+    // Canonicalize both paths, including when --preserve-symlinks-main is enabled.
+    return realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1]);
+  } catch { return false; }
+}
+if (isEntryPoint()) main().catch(()=>{console.error('Worker startup failed. Check its private environment and rootless validator.');process.exitCode=1;});
