@@ -1,0 +1,13 @@
+ai.nightz.dev {
+    root * /srv/nd-ai-studio/current
+    encode zstd gzip
+    header {
+        Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "no-referrer"
+        Permissions-Policy "camera=(), microphone=(), geolocation=()"
+        Cache-Control "no-cache"
+        -Server
+    }
+    file_server
+}

@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "project": "ND AI Studio",
+  "status": "frontend-preview",
+  "categories": [
+    { "id": "create", "label": "Create" },
+    { "id": "convert-bundle", "label": "Convert and Bundle" },
+    { "id": "browse", "label": "Browse" }
+  ],
+  "tools": [
+    { "id": "ai-script-generator", "name": "AI Script Generator", "category": "create", "engine": "coding", "status": "planned", "enabled": false, "description": "Plan Lua resources for Standalone, ND_Framework, ESX, QBCore, Qbox and vRP, with optional ox_lib integration." },
+    { "id": "discord-bot-generator", "name": "Discord Bot Generator", "category": "create", "engine": "coding", "status": "planned", "enabled": false, "description": "Plan Discord bots with configurable commands, roles and FiveM integration." },
+    { "id": "3d-generator", "name": "3D Generator", "category": "create", "engine": "3d-assets", "status": "planned", "enabled": false, "description": "Create props from text or images through a planned model and GTA export pipeline." },
+    { "id": "ai-animations", "name": "AI Animations", "category": "create", "engine": "animation", "status": "planned", "enabled": false, "description": "Explore video-to-motion capture, retargeting and GTA animation export." },
+    { "id": "image-generator", "name": "Image Generator", "category": "create", "engine": "image-texture", "status": "planned", "enabled": false, "description": "Generate concepts, textures and thumbnails with a connected image provider." },
+    { "id": "image-editor", "name": "Image Editor", "category": "create", "engine": "image-texture", "status": "planned", "enabled": false, "description": "Edit uploaded artwork with controlled changes to color, text and backgrounds." },
+    { "id": "eup-maker", "name": "EUP Maker", "category": "create", "engine": "image-texture", "status": "planned", "enabled": false, "description": "Design uniforms using compatible, properly licensed clothing templates." },
+    { "id": "animation-builder", "name": "Animation Builder", "category": "create", "engine": "animation", "status": "planned", "enabled": false, "description": "Build and refine keyframed poses before GTA-compatible export." },
+    { "id": "interior-builder", "name": "Interior Builder", "category": "create", "engine": "3d-assets", "status": "planned", "enabled": false, "description": "Compose interiors from approved props with spatial layout and placement tools." },
+    { "id": "prop-studio", "name": "Prop Studio", "category": "create", "engine": "animation", "status": "planned", "enabled": false, "description": "Plan interactive motion for doors, gates and mechanical props." },
+    { "id": "prop-reskin", "name": "Prop Reskin", "category": "create", "engine": "image-texture", "status": "planned", "enabled": false, "description": "Replace prop textures while preserving the original model layout." },
+    { "id": "tattoo-studio", "name": "Tattoo Studio", "category": "create", "engine": "image-texture", "status": "planned", "enabled": false, "description": "Prepare tattoo and patch artwork with appearance-resource configuration." },
+    { "id": "livery-studio", "name": "Livery Studio", "category": "create", "engine": "image-texture", "status": "planned", "enabled": false, "description": "Design vehicle graphics against compatible UV templates." },
+    { "id": "weapon-studio", "name": "Weapon Studio", "category": "create", "engine": "3d-assets", "status": "planned", "enabled": false, "description": "Customize in-game weapon assets with model and texture workflows." },
+    { "id": "ped-creator", "name": "Ped Creator", "category": "create", "engine": "3d-assets", "status": "planned", "enabled": false, "description": "Prepare character models for rigging, validation and add-on ped packaging." },
+    { "id": "handling-editor", "name": "Handling Editor", "category": "create", "engine": "utility-content", "status": "planned", "enabled": false, "description": "Edit handling.meta with validated values. Actual performance requires in-game testing." },
+    { "id": "inventory-icons", "name": "Inventory Icons", "category": "create", "engine": "image-texture", "status": "planned", "enabled": false, "description": "Create consistent item artwork for ox_inventory, QBCore and ESX inventories." },
+    { "id": "framework-converter", "name": "Framework Converter", "category": "convert-bundle", "engine": "coding", "status": "planned", "enabled": false, "description": "Plan resource migrations between supported frameworks and inspect compatibility gaps." },
+    { "id": "glb-to-fivem", "name": "GLB to FiveM", "category": "convert-bundle", "engine": "3d-assets", "status": "planned", "enabled": false, "description": "Convert compatible GLB and FBX inputs through a validated GTA asset pipeline." },
+    { "id": "resource-merger", "name": "Resource Merger", "category": "convert-bundle", "engine": "utility-content", "status": "planned", "enabled": false, "description": "Combine compatible resources while resolving manifests, paths and dependencies." },
+    { "id": "eup-merger", "name": "EUP Merger", "category": "convert-bundle", "engine": "utility-content", "status": "planned", "enabled": false, "description": "Merge compatible clothing packs with explicit collision and naming checks." },
+    { "id": "model-library", "name": "Model Library", "category": "browse", "engine": "3d-assets", "status": "planned", "enabled": false, "description": "Browse licensed models with provenance and import compatibility information." },
+    { "id": "community-gallery", "name": "Community Gallery", "category": "browse", "engine": "utility-content", "status": "planned", "enabled": false, "description": "Publish and discover community creations with explicit sharing permissions." },
+    { "id": "free-scripts", "name": "Free Scripts", "category": "browse", "engine": "utility-content", "status": "planned", "enabled": false, "description": "Browse ready-made resources with installation and compatibility information." }
+  ]
+}

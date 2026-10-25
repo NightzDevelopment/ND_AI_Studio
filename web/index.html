@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0b0b0e">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="description" content="Nightz Development's original FiveM creation workspace. Frontend preview with a 24-tool roadmap and local project briefs.">
+  <title>ND AI Studio | Nightz Development</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script type="module" src="/app.js"></script>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to workspace</a>
+  <aside class="sidebar" aria-label="Main navigation">
+    <a class="brand" href="#overview" aria-label="ND AI Studio home"><span class="brand-mark">N<span>D</span></span><span>AI STUDIO<small>NIGHTZ DEVELOPMENT</small></span></a>
+    <div class="nav-caption">WORKSPACE</div>
+    <nav id="navigation">
+      <a href="#overview" data-view="overview"><span class="nav-icon">/</span>Overview</a>
+      <a href="#tools" data-view="tools"><span class="nav-icon">+</span>Tool library<span class="nav-count">24</span></a>
+      <a href="#projects" data-view="projects"><span class="nav-icon">[]</span>Project briefs</a>
+      <a href="#readiness" data-view="readiness"><span class="nav-icon">::</span>Build readiness</a>
+    </nav>
+    <div class="sidebar-note"><span class="eyebrow">FOUNDATION / 01</span><p>A new workspace.<br>A bigger creative toolkit.</p><span class="muted">Generation engines are not connected in this preview.</span></div>
+    <div class="sidebar-footer"><span class="status-dot"></span>Frontend preview<small>ai.nightz.dev</small></div>
+  </aside>
+  <div class="shell">
+    <header class="topbar"><div class="breadcrumb">WORKSPACE <span>/</span> <strong id="view-label">OVERVIEW</strong></div><div class="top-actions"><span class="preview-label">V0.1 PREVIEW</span><button class="primary small" id="new-brief">+ New brief</button></div></header>
+    <main id="main" tabindex="-1">
+      <section class="hero" id="hero"><div class="hero-copy"><p class="eyebrow"><span class="red-line"></span>THE NIGHTZ CREATOR WORKSPACE</p><h1>Your next idea.<br><span>Built different.</span></h1><p class="hero-description">One home for your FiveM scripts, assets and creative projects. Start with a brief. Keep your next build moving.</p><div class="hero-actions"><a class="primary" href="#tools">Explore the toolkit <span aria-hidden="true">↗</span></a><button class="secondary" id="hero-brief">Start a project brief</button></div><p class="hero-footnote">Original ND design. Working frontend. AI generation is still planned.</p></div><div class="hero-aside" aria-label="Platform scope"><span class="eyebrow">THE CREATIVE STACK</span><div class="stack-row"><span>01</span><div><strong>Code &amp; connect</strong><small>Scripts, bots and framework migration</small></div><span class="stack-mark">&lt;/&gt;</span></div><div class="stack-row"><span>02</span><div><strong>Design &amp; build</strong><small>Textures, props, characters and worlds</small></div><span class="stack-mark">3D</span></div><div class="stack-row"><span>03</span><div><strong>Move &amp; refine</strong><small>Animation, conversions and packaging</small></div><span class="stack-mark">FX</span></div><div class="scope-stats"><div><strong>24</strong><small>planned tools</small></div><div><strong>05</strong><small>engine families</small></div><div><strong>00</strong><small>connected engines</small></div></div></div></section>
+      <div id="error-banner" class="notice error" role="alert" hidden></div>
+      <section id="tool-section" aria-labelledby="tools-title"><div class="section-heading"><div><p class="eyebrow">YOUR TOOLKIT</p><h2 id="tools-title">A place for every idea.</h2></div><span class="muted" id="result-count" aria-live="polite">Loading catalog...</span></div><div class="catalog-toolbar"><div class="filters" id="filters" aria-label="Tool categories"><button data-category="all" aria-pressed="true">All tools</button><button data-category="create" aria-pressed="false">Create</button><button data-category="convert-bundle" aria-pressed="false">Convert &amp; bundle</button><button data-category="browse" aria-pressed="false">Browse</button></div><label class="search"><span class="sr-only">Search tools</span><span aria-hidden="true">/</span><input id="search" type="search" placeholder="Find your next tool" autocomplete="off"></label></div><div id="tool-grid" class="tool-grid"></div><div id="no-tools" class="empty" hidden>No tools match your search. Try a different name or category.</div></section>
+      <section id="project-section" aria-labelledby="projects-title" hidden><div class="section-heading"><div><p class="eyebrow">PICK UP WHERE YOU LEFT OFF</p><h2 id="projects-title">Project briefs.</h2></div><span class="muted" id="project-count"></span></div><div class="notice">Briefs are saved only in this browser, not in an account or on the server. Export anything important. Do not enter passwords, API keys or confidential customer data.</div><div id="project-list" class="project-list"></div></section>
+      <section id="readiness-section" aria-labelledby="readiness-title" hidden><div class="section-heading"><div><p class="eyebrow">NO SIMULATED BUILDS</p><h2 id="readiness-title">What is actually ready.</h2></div></div><div class="readiness-card"><h3>Available in this release</h3><p>Responsive tool discovery, category filters, search, local project brief editing, deletion and JSON export. The catalog contains all 24 planned tools.</p><h3>Not connected yet</h3><p>Authentication, server-side project storage, AI providers, sandboxed workers, file generation, asset conversion, billing and community publication. No progress logs, credit balances or generated files are simulated.</p></div><div id="engine-list" class="engine-list"></div></section>
+      <footer class="page-footer"><span>Nightz Development / AI Studio</span><span>Designed for creators. Built on real capabilities.</span></footer>
+    </main>
+  </div>
+  <dialog id="tool-dialog" aria-labelledby="tool-dialog-title"><div class="dialog-heading"><p class="eyebrow">TOOL OVERVIEW</p><button class="icon-button" data-close aria-label="Close tool details">×</button></div><h2 id="tool-dialog-title"></h2><p id="tool-description" class="dialog-description"></p><div class="notice"><strong>Planned, not available yet.</strong><p>This tool has no connected generation or conversion engine. A brief records requirements; it does not create a resource.</p></div><div class="dialog-actions"><button class="secondary" data-close>Close</button><button class="primary" id="tool-brief">Create project brief</button></div></dialog>
+  <dialog id="brief-dialog" aria-labelledby="brief-dialog-title"><form id="brief-form"><div class="dialog-heading"><p class="eyebrow">PROJECT SETUP</p><button type="button" class="icon-button" data-close aria-label="Close project brief">×</button></div><h2 id="brief-dialog-title">Start with an idea.</h2><p class="dialog-description">Plan the build now. Generation will be available when its engine is connected.</p><label>Project name<input name="name" maxlength="80" placeholder="ND_Garage" required></label><div class="form-columns"><label>Tool<select name="toolId" id="brief-tool" required></select></label><label id="target-label">Target framework<select name="target"><option>Standalone</option><option>ND_Framework</option><option>ESX</option><option>QBCore</option><option>Qbox</option><option>vRP</option><option>ox_core</option><option>Custom</option></select></label></div><label>Requirements<textarea name="requirements" maxlength="12000" rows="5" placeholder="Describe the behavior, dependencies, interface and outputs you need." required></textarea></label><p class="muted fine-print">Browser-local storage only. No code is generated. No provider receives this brief.</p><p id="form-error" class="form-error" role="alert" hidden></p><div class="dialog-actions"><button class="secondary" type="button" data-close>Cancel</button><button class="primary" type="submit">Save brief</button></div></form></dialog>
+  <div id="toast" class="toast" role="status" hidden></div>
+  <noscript><div class="notice">JavaScript is required for tool search and local project briefs. No generation services are connected.</div></noscript>
+</body>
+</html>
