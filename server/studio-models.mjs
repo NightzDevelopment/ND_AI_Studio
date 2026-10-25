@@ -1,13 +1,23 @@
 import { insist, fields, string, integer, studioSettings, audit } from './studio-domain.mjs';
+import { VERIFIED_PRESETS } from './model-presets.mjs';
 
 const DEFAULT = { configured:false, models:[], defaultModelId:'', creditsEnabled:false };
-const MODEL_FIELDS = ['id','label','tier','enabled','compatible','inputUsdPerMillion','cachedInputUsdPerMillion','outputUsdPerMillion','maxOutputTokens','maxCalls','maxBudgetMicros','timeoutSeconds','creditsPerBuild'];
+const PROVIDER_DEFAULTS={provider:'openai',cacheWritePolicy:'provider-default',cacheWrite30mUsdPerMillion:null,cacheWrite12hUsdPerMillion:null,longContextThreshold:null,longContextInputMultiplier:1,longContextOutputMultiplier:1};
+const MODEL_FIELDS = ['id','label','tier','enabled','compatible','inputUsdPerMillion','cachedInputUsdPerMillion','outputUsdPerMillion','maxOutputTokens','maxCalls','maxBudgetMicros','timeoutSeconds','creditsPerBuild',...Object.keys(PROVIDER_DEFAULTS)];
 const uuid = value => typeof value === 'string' && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(value);
 const now = () => new Date().toISOString();
 
 export function validateModel(model) {
   fields(model,MODEL_FIELDS);
-  insist(typeof model.id === 'string' && /^[A-Za-z0-9_.:-]{1,100}$/.test(model.id),400,'Enter an exact OpenAI model identifier.');
+  model={...PROVIDER_DEFAULTS,...model};
+  insist(typeof model.id === 'string' && /^[A-Za-z0-9_.:-]{1,100}$/.test(model.id),400,'Enter an exact provider API model identifier.');
+  insist(['openai','deepseek'].includes(model.provider),400,'Choose a supported coding provider.');
+  insist(['provider-default','disabled'].includes(model.cacheWritePolicy),400,'Choose a supported prompt-cache policy.');
+  insist(model.provider==='openai'||model.cacheWritePolicy==='provider-default',400,'DeepSeek manages its cache automatically.');
+  for(const key of ['cacheWrite30mUsdPerMillion','cacheWrite12hUsdPerMillion'])insist(model[key]===null||typeof model[key]==='number'&&Number.isFinite(model[key])&&model[key]>=0&&model[key]<=10000,400,'Invalid cache-write price.');
+  if(model.longContextThreshold!==null)integer(model.longContextThreshold,1,10000000,'long-context input threshold');
+  for(const key of ['longContextInputMultiplier','longContextOutputMultiplier'])insist(typeof model[key]==='number'&&Number.isFinite(model[key])&&model[key]>=1&&model[key]<=10,400,'Invalid long-context price multiplier.');
+  insist(model.longContextThreshold!==null||(model.longContextInputMultiplier===1&&model.longContextOutputMultiplier===1),400,'Set a long-context threshold before price multipliers.');
   const label=string(model.label,80,'model label');
   insist(['budget','standard','premium'].includes(model.tier),400,'Choose a model tier.');
   insist(typeof model.enabled === 'boolean' && typeof model.compatible === 'boolean',400,'Invalid model availability.');
@@ -25,7 +35,7 @@ export function validateModel(model) {
   return {...model,label};
 }
 
-export function createModels({store,actor,readJson,json}) {
+export function createModels({store,actor,readJson,json,workerReady=()=>true}) {
   store.transaction(()=>store.db.exec(`
     CREATE TABLE IF NOT EXISTS studio_model_settings(id INTEGER PRIMARY KEY CHECK(id=1),value TEXT NOT NULL,version INTEGER NOT NULL DEFAULT 1) STRICT;
     CREATE TABLE IF NOT EXISTS studio_credit_wallets(user_id TEXT PRIMARY KEY REFERENCES users(id),balance INTEGER NOT NULL DEFAULT 0 CHECK(balance>=0 AND balance<=1000000000),version INTEGER NOT NULL DEFAULT 1) STRICT;
@@ -43,7 +53,7 @@ export function createModels({store,actor,readJson,json}) {
     if (!data.configured) {
       const s=studioSettings(store);
       if (s.model && s.inputUsdPerMillion > 0 && s.outputUsdPerMillion > 0) {
-        data.models=[{id:s.model,label:s.model,tier:'standard',enabled:true,compatible:true,
+        data.models=[{...PROVIDER_DEFAULTS,id:s.model,label:s.model,tier:'standard',enabled:true,compatible:true,
           inputUsdPerMillion:s.inputUsdPerMillion,cachedInputUsdPerMillion:s.inputUsdPerMillion,
           outputUsdPerMillion:s.outputUsdPerMillion,maxOutputTokens:s.maxOutputTokens,maxCalls:s.maxCalls,
           maxBudgetMicros:s.maxBudgetMicros,timeoutSeconds:180,creditsPerBuild:0}];
@@ -51,7 +61,7 @@ export function createModels({store,actor,readJson,json}) {
       }
       return {...data,version:row.version,pricingVersion:`legacy:${s.version}`};
     }
-    return {...data,version:row.version,pricingVersion:`catalog:${row.version}`};
+    return {...data,models:data.models.map(model=>({...PROVIDER_DEFAULTS,...model})),version:row.version,pricingVersion:`catalog:${row.version}`};
   }
   function wallet(userId) {
     const row=store.db.prepare('SELECT balance,version FROM studio_credit_wallets WHERE user_id=?').get(userId) || {balance:0,version:0};
@@ -65,7 +75,7 @@ export function createModels({store,actor,readJson,json}) {
   function publicCatalog(userId) {
     const data=configuration();
     return {pricingVersion:data.pricingVersion,defaultModelId:data.defaultModelId,creditsEnabled:data.creditsEnabled,
-      models:data.models.filter(model=>model.enabled && model.compatible).map(model=>({id:model.id,label:model.label,tier:model.tier,
+      models:data.models.filter(model=>model.enabled && model.compatible).map(model=>({id:model.id,label:model.label,tier:model.tier,provider:model.provider,workerReady:workerReady(model.provider),
         creditsPerBuild:model.creditsPerBuild,maxBudgetMicros:model.maxBudgetMicros,maxOutputTokens:model.maxOutputTokens,maxCalls:model.maxCalls})),wallet:wallet(userId)};
   }
   function select(body) {
@@ -77,7 +87,7 @@ export function createModels({store,actor,readJson,json}) {
       insist(body.quotedCredits === (data.creditsEnabled ? model.creditsPerBuild : 0),409,'The credit quote changed. Review it before generating.');
     }
     const s=studioSettings(store);
-    return {...s,model:model.id,modelLabel:model.label,modelTier:model.tier,
+    return {...s,...Object.fromEntries(Object.keys(PROVIDER_DEFAULTS).map(key=>[key,model[key]])),model:model.id,modelLabel:model.label,modelTier:model.tier,
       inputUsdPerMillion:model.inputUsdPerMillion,cachedInputUsdPerMillion:model.cachedInputUsdPerMillion,outputUsdPerMillion:model.outputUsdPerMillion,
       maxOutputTokens:model.maxOutputTokens,maxCalls:model.maxCalls,maxBudgetMicros:model.maxBudgetMicros,timeoutSeconds:model.timeoutSeconds,
       pricingVersion:data.pricingVersion,creditsPerBuild:data.creditsEnabled ? model.creditsPerBuild : 0,creditsEnabled:data.creditsEnabled,
@@ -109,7 +119,7 @@ export function createModels({store,actor,readJson,json}) {
   }
   function describe(row) {
     const s=JSON.parse(row.settings), credit=store.db.prepare('SELECT amount,state FROM studio_job_credits WHERE job_id=?').get(row.id);
-    return {model:s.model,modelLabel:s.modelLabel || s.model,pricingVersion:s.pricingVersion || null,
+    return {model:s.model,modelLabel:s.modelLabel || s.model,provider:s.provider||'openai',pricingVersion:s.pricingVersion || null,
       credits:credit || {amount:0,state:'not-used'}};
   }
   function history(userId) {
@@ -122,7 +132,7 @@ export function createModels({store,actor,readJson,json}) {
     if (path.startsWith('/api/admin/')) insist(a.owner,403,'Only the configured owner can manage model pricing or credits.');
     if (path==='/api/studio/models' && method==='GET') { json(res,200,publicCatalog(a.user.id)); return true; }
     if (path==='/api/studio/credits' && method==='GET') { json(res,200,{wallet:wallet(a.user.id),items:history(a.user.id)}); return true; }
-    if (path==='/api/admin/models' && method==='GET') { json(res,200,configuration()); return true; }
+    if (path==='/api/admin/models' && method==='GET') { json(res,200,{...configuration(),presets:VERIFIED_PRESETS}); return true; }
     if (path==='/api/admin/models' && method==='PATCH') {
       const body=await readJson(req,131072); fields(body,['version','models','defaultModelId','creditsEnabled']);
       integer(body.version,1,1000000000,'model catalog revision'); insist(typeof body.creditsEnabled==='boolean',400,'Invalid credit enforcement.');

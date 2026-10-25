@@ -6,7 +6,7 @@ This release extends the existing Node, SQLite, Nginx and vanilla JavaScript app
 
 - Explicit owner Discord user-ID allowlist, bot-backed guild role mappings, separate administration permissions, user suspension, session revocation, daily build/spend limits, audit history and generator access controls.
 - Private projects created from scratch or copied from saved briefs, a custom source editor with syntax highlighting and tabs, file creation/rename/delete, optimistic revisions, favorites, archival, historical comparison, restore and ZIP export.
-- Script and Discord bot generation using the OpenAI Responses API, persistent queue/events, polling-based live logs, cancellation, bounded repairs, conservative spending reservations and automatic saving of validated files as a new revision. History, comparison and ZIP downloads remain available.
+- Script and Discord bot generation using provider-specific OpenAI and DeepSeek Responses adapters, persistent queue/events, polling-based live logs, cancellation, bounded repairs, conservative spending reservations and automatic saving of validated files as a new revision. History, comparison and ZIP downloads remain available.
 - A separate build worker, pinned local validator image and offline rootless-container syntax checks. Project source is never executed by the account API.
 
 The other 22 tool engines are not implemented. All generation is disabled by default. A project can be edited and exported without a connected worker. No subscriptions, paid credits, public gallery, store entitlements or shared account system are added.
@@ -65,7 +65,7 @@ Clone this repository on that build host, enter its directory and run as the ded
 bash deploy/setup-worker.sh
 ```
 
-The installer builds the trusted validator from `worker/Dockerfile`, records its immutable image ID, asks privately for the shared Studio worker token and an OpenAI API key, and creates a user service. No user source enters the image build context. No project dependencies are installed or project entry points executed by the validator.
+The installer builds the trusted validator from `worker/Dockerfile`, records its immutable image ID, reuses private settings or asks privately for the shared Studio worker token and a provider key, and creates a user service. It supports OPENAI_API_KEY, DEEPSEEK_API_KEY, or both, and preserves unrelated existing settings/comments. On a new interactive installation, leaving OpenAI blank prompts for DeepSeek. Upgrade the website before the worker so provider advertisements are understood. No user source enters the image build context. No project dependencies are installed or project entry points executed by the validator.
 
 Worker configuration: `~/.config/nd-ai-worker.env`, mode 0600. Worker releases: `~/.local/share/nd-ai-worker/releases`. User service: `nd-ai-worker.service`.
 
@@ -74,7 +74,7 @@ systemctl --user status nd-ai-worker.service --no-pager
 journalctl --user -u nd-ai-worker.service -n 40 --no-pager
 ```
 
-The worker authenticates to the website over HTTPS. It receives only a claimed project's snapshot, instructions and non-secret generation settings. The website never receives the provider key. The worker receives neither account sessions nor the bot token. A worker token is privileged: it can claim queued source snapshots, so keep it private and rotate it on both hosts after exposure.
+The worker authenticates to the website over HTTPS and advertises provider names based on its configured keys. Readiness proves key presence and local validator readiness, not provider account authorization. It receives only a claimed project's snapshot, instructions and non-secret generation settings. The website never receives the provider key. The worker receives neither account sessions nor the bot token. A worker token is privileged: it can claim queued source snapshots, so keep it private and rotate it on both hosts after exposure.
 
 Do not mount a Docker socket, credentials, website directories or arbitrary host paths into validation containers. The validator mounts only a temporary source tree read-only, disables the network, drops capabilities, uses a non-root UID, and applies memory, PID, CPU and time limits. Containers are forcibly removed after checks, including timed-out Docker clients. Container isolation is not an absolute security guarantee; co-location remains a limitation of the owner test deployment.
 

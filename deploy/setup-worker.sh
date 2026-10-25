@@ -51,37 +51,47 @@ path = Path.home() / '.config/nd-ai-worker.env'
 if path.is_symlink():
     raise SystemExit('Refusing a symlink environment file.')
 values = {}
+original_lines = []
+managed = ['STUDIO_ORIGIN','STUDIO_WORKER_TOKEN','OPENAI_API_KEY','DEEPSEEK_API_KEY','VALIDATOR_IMAGE','DOCKER_HOST','NODE_ENV']
 if path.exists():
     if path.stat().st_uid != os.getuid():
         raise SystemExit('Worker environment must belong to the current user.')
-    for line in path.read_text().splitlines():
+    original_lines = path.read_text().splitlines()
+    for line in original_lines:
         if '=' in line and not line.startswith('#'):
             key, value = line.split('=', 1)
             if key in values:
                 raise SystemExit('Duplicate worker configuration keys.')
             values[key] = value.strip().strip('"\'')
 values.setdefault('STUDIO_ORIGIN', 'https://ai.nightz.dev')
-if not values.get('STUDIO_WORKER_TOKEN') or not values.get('OPENAI_API_KEY'):
+if not values.get('STUDIO_WORKER_TOKEN') or not (values.get('OPENAI_API_KEY') or values.get('DEEPSEEK_API_KEY')):
     try:
         # getpass reads from the controlling terminal; this stream only prints prompts.
         with open('/dev/tty', 'w', encoding='utf-8') as tty, warnings.catch_warnings():
             warnings.simplefilter('error', getpass.GetPassWarning)
             if not values.get('STUDIO_WORKER_TOKEN'):
                 values['STUDIO_WORKER_TOKEN'] = getpass.getpass('Studio worker token from the website private environment (hidden): ', stream=tty).strip()
-            if not values.get('OPENAI_API_KEY'):
+            if not (values.get('OPENAI_API_KEY') or values.get('DEEPSEEK_API_KEY')):
                 values['OPENAI_API_KEY'] = getpass.getpass('OpenAI API key for this worker (hidden): ', stream=tty).strip()
+                if not values['OPENAI_API_KEY']:
+                    values['DEEPSEEK_API_KEY'] = getpass.getpass('DeepSeek API key for this worker (hidden): ', stream=tty).strip()
     except (OSError, EOFError, KeyboardInterrupt, getpass.GetPassWarning):
         raise SystemExit('Secure interactive setup could not complete. Run this installer in your SSH terminal. Worker environment unchanged.') from None
 if not re.fullmatch(r'[a-f0-9]{64}', values['STUDIO_WORKER_TOKEN']):
     raise SystemExit('Invalid worker token.')
-if not re.fullmatch(r'[A-Za-z0-9_.-]{16,500}', values['OPENAI_API_KEY']):
-    raise SystemExit('Invalid provider key format.')
+if not (values.get('OPENAI_API_KEY') or values.get('DEEPSEEK_API_KEY')):
+    raise SystemExit('Configure at least one provider key.')
+for key in ['OPENAI_API_KEY','DEEPSEEK_API_KEY']:
+    if values.get(key) and not re.fullmatch(r'[A-Za-z0-9_.-]{16,500}', values[key]):
+        raise SystemExit('Invalid provider key format.')
 if values['STUDIO_ORIGIN'] != 'https://ai.nightz.dev':
     raise SystemExit('This installer is scoped to ai.nightz.dev.')
 values['VALIDATOR_IMAGE'] = os.environ['ND_AI_VALIDATOR_IMAGE']
 values['DOCKER_HOST'] = os.environ['DOCKER_HOST']
 values['NODE_ENV'] = 'production'
-text = ''.join(key + '=' + values[key] + '\n' for key in ['STUDIO_ORIGIN','STUDIO_WORKER_TOKEN','OPENAI_API_KEY','VALIDATOR_IMAGE','DOCKER_HOST','NODE_ENV'])
+text = ''.join(key + '=' + values[key] + '\n' for key in managed if key in values)
+# Keep unrelated settings and comments byte-for-byte rather than dropping private bindings.
+text += ''.join(line + '\n' for line in original_lines if '=' not in line or line.startswith('#') or line.split('=',1)[0] not in managed)
 fd, name = tempfile.mkstemp(dir=path.parent, prefix='.nd-ai-worker.')
 try:
     os.fchmod(fd, 0o600)

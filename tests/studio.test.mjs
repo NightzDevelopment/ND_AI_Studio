@@ -249,3 +249,82 @@ test('over-budget completion cannot auto-apply and safely replays its recorded f
   const done=await f.complete(job,result,250001);assert.equal(done.data.status,'failed');assert.equal(done.data.appliedVersion,null);
   assert.deepEqual((await f.complete(job,result,250001)).data,done.data);assert.equal((await f.call(`/api/projects/${p.id}`)).data.project.version,1);
 });
+
+test('worker provider readiness defaults old heartbeats to OpenAI and rejects malformed advertisements',async t=>{
+  const f=await fixture(t);await f.enabled();
+  const status=()=>f.call('/api/worker/status',{method:'POST',body:{},user:null,worker:true});
+  assert.deepEqual((await status()).data,{ready:true,providers:['openai']});
+  assert.deepEqual((await f.call('/api/studio/session')).data.workerProviders,['openai']);
+  for(const providers of [null,'openai',['openai','openai'],['qwen'],['openai','deepseek','other']]){
+    const r=await f.call('/api/worker/heartbeat',{method:'POST',body:{ready:true,providers},user:null,worker:true});assert.equal(r.status,400);
+  }
+  assert.deepEqual((await status()).data.providers,['openai']);
+  assert.equal((await f.call('/api/worker/heartbeat',{method:'POST',body:{ready:true,providers:['deepseek','openai']},user:null,worker:true})).status,200);
+  assert.deepEqual((await status()).data.providers,['deepseek','openai']);
+  assert.deepEqual((await f.call('/api/admin/settings')).data.workerProviders,['deepseek','openai']);
+  await f.call('/api/worker/heartbeat',{method:'POST',body:{ready:true},user:null,worker:true});assert.deepEqual((await status()).data.providers,['openai']);
+});
+
+test('offline, stale and uncredentialed workers expose no ready providers',async t=>{
+  const f=await fixture(t);const session=()=>f.call('/api/studio/session');
+  assert.equal((await session()).data.workerReady,false);assert.deepEqual((await session()).data.workerProviders,[]);
+  f.store.db.prepare('INSERT INTO studio_worker VALUES(1,?,1)').run(Date.now());
+  assert.deepEqual((await session()).data.workerProviders,['openai']);
+  f.store.db.prepare('UPDATE studio_worker SET checked_at=?').run(Date.now()-45001);assert.deepEqual((await session()).data.workerProviders,[]);
+  await f.call('/api/worker/heartbeat',{method:'POST',body:{ready:false,providers:['deepseek']},worker:true,user:null});assert.deepEqual((await session()).data.workerProviders,[]);
+  await f.call('/api/worker/heartbeat',{method:'POST',body:{ready:true,providers:['deepseek']},worker:true,user:null});assert.deepEqual((await session()).data.workerProviders,['deepseek']);
+  f.config.workerToken='';assert.equal((await session()).data.workerReady,false);assert.deepEqual((await session()).data.workerProviders,[]);
+});
+
+function providerCatalog(f){
+  const model=(id,provider)=>({id,provider,label:id,tier:'budget',enabled:true,compatible:true,inputUsdPerMillion:1,cachedInputUsdPerMillion:.25,outputUsdPerMillion:2,maxOutputTokens:1024,maxCalls:2,maxBudgetMicros:100000,timeoutSeconds:180,creditsPerBuild:5});
+  f.store.db.prepare('UPDATE studio_model_settings SET value=? WHERE id=1').run(JSON.stringify({configured:true,models:[model('test-openai','openai'),model('deepseek-flash','deepseek')],defaultModelId:'test-openai',creditsEnabled:true}));
+  for(const credential of Object.values(f.credentials))f.store.db.prepare('INSERT INTO studio_credit_wallets(user_id,balance) VALUES(?,50)').run(credential.user.id);
+}
+async function queueProvider(f,p,modelId,user=OWNER){
+  const quote=(await f.call('/api/studio/models',{user})).data;
+  return f.call(`/api/projects/${p.id}/jobs`,{method:'POST',user,body:{version:p.version,prompt:'Provider readiness fixture',requestId:randomUUID(),modelId,pricingVersion:quote.pricingVersion,quotedCredits:5}});
+}
+
+test('missing selected provider credentials reject enqueue before reserving credits or jobs',async t=>{
+  const f=await fixture(t);await f.enabled();providerCatalog(f);const p=await f.create();
+  const unsupported=await queueProvider(f,p,'deepseek-flash');assert.equal(unsupported.status,503);assert.match(unsupported.data.error,/selected provider/);
+  assert.equal(f.store.db.prepare('SELECT count(*) n FROM studio_jobs').get().n,0);assert.equal(f.store.db.prepare('SELECT count(*) n FROM studio_credit_ledger').get().n,0);
+  await f.call('/api/worker/heartbeat',{method:'POST',body:{ready:true,providers:['deepseek']},user:null,worker:true});
+  assert.equal((await queueProvider(f,p,'test-openai')).status,503);
+  assert.equal((await queueProvider(f,p,'deepseek-flash')).status,202);assert.equal((await f.claim()).settings.provider,'deepseek');
+});
+
+test('claim skips unavailable provider snapshots and can claim a supported job behind them',async t=>{
+  const f=await fixture(t);await f.enabled();providerCatalog(f);
+  const s=studioSettings(f.store);delete s.version;s.tools['ai-script-generator']='members';f.store.db.prepare('UPDATE studio_settings SET value=?').run(JSON.stringify(s));
+  await f.call('/api/worker/heartbeat',{method:'POST',body:{ready:true,providers:['deepseek','openai']},user:null,worker:true});
+  const first=await f.create();const queuedDeepseek=await queueProvider(f,first,'deepseek-flash');assert.equal(queuedDeepseek.status,202);
+  const second=(await f.call('/api/projects',{method:'POST',user:OTHER,body:{name:'Other provider',toolId:'ai-script-generator',target:'Standalone',requirements:'Test'}})).data.project;
+  const queuedOpenai=await queueProvider(f,second,'test-openai',OTHER);assert.equal(queuedOpenai.status,202);
+  f.store.db.prepare('UPDATE studio_jobs SET created_at=? WHERE id=?').run('2000-01-01T00:00:00.000Z',queuedDeepseek.data.job.id);
+  await f.call('/api/worker/heartbeat',{method:'POST',body:{ready:true,providers:['openai']},user:null,worker:true});
+  const claimed=await f.claim();assert.equal(claimed.id,queuedOpenai.data.job.id);assert.equal(claimed.settings.provider,'openai');
+  assert.equal(f.store.db.prepare('SELECT status FROM studio_jobs WHERE id=?').get(queuedDeepseek.data.job.id).status,'queued');
+  assert.equal(f.store.db.prepare('SELECT state FROM studio_job_credits WHERE job_id=?').get(queuedDeepseek.data.job.id).state,'reserved');
+  assert.equal((await f.claim()),null);
+  await f.call('/api/worker/heartbeat',{method:'POST',body:{ready:true,providers:['deepseek']},user:null,worker:true});assert.equal((await f.claim()).id,queuedDeepseek.data.job.id);
+});
+
+test('legacy queued provider snapshots remain OpenAI-only when provider was not captured',async t=>{
+  const f=await fixture(t);await f.enabled();const p=await f.create();const queued=await f.queue(p);
+  const row=f.store.db.prepare('SELECT settings FROM studio_jobs WHERE id=?').get(queued.data.job.id),settings=JSON.parse(row.settings);delete settings.provider;f.store.db.prepare('UPDATE studio_jobs SET settings=? WHERE id=?').run(JSON.stringify(settings),queued.data.job.id);
+  await f.call('/api/worker/heartbeat',{method:'POST',body:{ready:true,providers:['deepseek']},user:null,worker:true});assert.equal((await f.claim()),null);
+  await f.call('/api/worker/heartbeat',{method:'POST',body:{ready:true},user:null,worker:true});assert.equal((await f.claim()).id,queued.data.job.id);
+});
+
+test('provider advertisements persist through an API restart and do not revoke an active completion',async t=>{
+  const directory=mkdtempSync(join(tmpdir(),'nd-providers-'));t.after(()=>rmSync(directory,{recursive:true,force:true}));const database=join(directory,'studio.sqlite');
+  const first=await fixture(t,true,database);await first.enabled();providerCatalog(first);const p=await first.create();
+  await first.call('/api/worker/heartbeat',{method:'POST',body:{ready:true,providers:['deepseek']},user:null,worker:true});
+  await queueProvider(first,p,'deepseek-flash');const job=await first.claim();await first.close();
+  const next=await fixture(t,true,database);assert.deepEqual((await next.call('/api/studio/session')).data.workerProviders,['deepseek']);
+  await next.call('/api/worker/heartbeat',{method:'POST',body:{ready:true,providers:[]},user:null,worker:true});
+  assert.equal((await next.complete(job)).data.status,'applied');
+  const status=await next.call('/api/worker/status',{method:'POST',body:{},user:null,worker:true});assert.deepEqual(status.data,{ready:true,providers:[]});
+});

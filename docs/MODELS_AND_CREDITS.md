@@ -14,15 +14,19 @@ Before a paid generation request, a small trusted fixture checks the actual vali
 
 Control room > Models & credits lets the owner configure up to 40 exact model IDs, display names, tiers, availability, input/cached-input/output token prices, output limits, request timeouts, call limits, per-build API estimate caps and fixed credits per completed proposal.
 
-Only enable models that support the OpenAI Responses API and strict JSON schema output and are accessible to the worker's API project. This is not a claim that every OpenAI model supports code generation. Image, audio, embedding, realtime, moderation and incompatible legacy endpoints are not interchangeable with this text-generation adapter. The compatibility checkbox is an owner confirmation, not a live model-access probe.
+Only enable text/code models that support the selected provider's documented Responses and JSON-schema contract and are accessible to the worker's API account. OpenAI and DeepSeek have distinct constrained endpoints and worker keys. DeepSeek omits the undocumented OpenAI strict flag; all returned changes still undergo local schema/path/size checks and the same isolated validation. Image, audio, embedding, realtime, moderation and incompatible legacy endpoints are separate pipelines. The compatibility checkbox is an owner confirmation, not a live model-access probe.
 
-No new model IDs or current provider prices are invented or automatically enabled. An existing configured single model remains available as a legacy fallback until the owner saves the new catalog. After that save, use the catalog rather than the legacy single-model fields. Current reference documentation:
+The owner can import five documented presets without replacing the existing catalog or default. All imported presets start disabled and unconfirmed. Their verified reference prices and limits, editable suggested credits and source links are shown before enabling. An existing configured single model remains available as a legacy fallback until the owner saves the new catalog. After that save, use the catalog rather than the legacy single-model fields. Current reference documentation:
 
 - https://developers.openai.com/api/docs/models
 - https://developers.openai.com/api/docs/guides/structured-outputs
 - https://developers.openai.com/api/docs/pricing
+- https://api-docs.deepseek.com/quick_start/pricing/
+- https://api-docs.deepseek.com/guides/responses_api
 
-Every submitted job captures the selected model, pricing version and limits. Editing the catalog does not silently reprice an existing job. A stale browser quote is rejected before enqueue. The API ignores no client prices: unexpected pricing fields are rejected. Provider cost calculations use returned cached-input counts where present and do not add reasoning tokens a second time to output_tokens.
+See [the provider verification record](PROVIDER_RESEARCH.md) for exact IDs and rates. The new OpenAI profiles disable prompt caching using supported explicit mode without breakpoints. Accounting also understands nonoverlapping cached reads and 30-minute/12-hour writes, and applies the documented whole-request long-context price bands. Unknown positive write meters or missing write prices fail conservatively instead of being treated as free. DeepSeek estimates use peak prices and provider-managed hit/miss caching; actual off-peak charges can be lower. Existing job profiles retain their captured policy and rates.
+
+Every submitted job captures the provider, selected model, caching policy, prices, pricing version and limits. Editing the catalog does not silently reprice an existing job. A stale browser quote is rejected before enqueue. Unexpected client pricing fields are rejected. Provider cost calculations validate token subsets and do not add reasoning tokens a second time to output_tokens. A worker advertises which provider keys are configured, without reporting their values. A model without a matching healthy worker is rejected before job/credit reservation; a queued job keeps its provider snapshot and is never silently rerouted.
 
 ## Internal Studio credits
 
@@ -34,7 +38,7 @@ The owner can release a pending hold or finalize its charge in Models & credits.
 
 ## Deploy both halves
 
-Allow active builds to finish before upgrading. Do not change credentials or disable Docker restrictions.
+Allow active builds to finish before upgrading. Upgrade the website first so it accepts the new provider heartbeat, then upgrade the worker. Do not rotate existing credentials or disable Docker restrictions. The worker needs at least one privately configured provider key: OPENAI_API_KEY, DEEPSEEK_API_KEY, or both. Credentials remain under the dedicated worker account; never enter them in the model catalog or copy them into source.
 
 Website, in the root SSH session:
 

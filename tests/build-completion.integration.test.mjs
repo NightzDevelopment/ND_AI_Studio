@@ -9,11 +9,12 @@ import { Store } from '../server/store.mjs';
 import { createApp, hash } from '../server/app.mjs';
 import { readConfig } from '../server/config.mjs';
 import { runJob } from '../worker/start.mjs';
+import { generate } from '../worker/provider.mjs';
 
 const ownerId='100000000000000001';
 const generatedFiles=[{path:'README.md',content:'# Completed resource'}, {path:'client.lua',content:'print("generated")'}].sort((a,b)=>a.path.localeCompare(b.path));
 const catalog={tools:[{id:'ai-script-generator',engine:'coding',category:'create'}]};
-async function fixture(t) {
+async function fixture(t,provider='openai') {
   const directory=await mkdtemp(join(tmpdir(),'studio-completion-'));
   t.after(()=>rm(directory,{recursive:true,force:true}));
   const database=join(directory,'studio.sqlite');
@@ -45,11 +46,11 @@ async function fixture(t) {
   await request('/api/admin/settings',{method:'PATCH',body:{...current,tools:{'ai-script-generator':'owner','discord-bot-generator':'disabled'}}});
   const settings=await request('/api/admin/models');
   await request('/api/admin/models',{method:'PATCH',body:{version:settings.version,creditsEnabled:true,defaultModelId:'fixture-model',models:[{
-    id:'fixture-model',label:'Fixture',tier:'budget',enabled:true,compatible:true,inputUsdPerMillion:1,cachedInputUsdPerMillion:.25,outputUsdPerMillion:2,
+    id:'fixture-model',label:'Fixture',provider,tier:'budget',enabled:true,compatible:true,inputUsdPerMillion:1,cachedInputUsdPerMillion:.25,outputUsdPerMillion:2,
     maxOutputTokens:1024,maxCalls:2,maxBudgetMicros:100000,timeoutSeconds:180,creditsPerBuild:5
   }]}});
   await request('/api/admin/credits',{method:'POST',body:{discordId:ownerId,amount:25,reason:'Integration fixture',requestId:randomUUID(),version:0}});
-  await worker('/api/worker/heartbeat',{ready:true});
+  await worker('/api/worker/heartbeat',{ready:true,providers:[provider]});
   const {project}=await request('/api/projects',{method:'POST',body:{name:'ND_Fixture',toolId:'ai-script-generator',target:'Standalone',requirements:'Fixture-only build'}});
   const models=await request('/api/studio/models');
   const queued=await request(`/api/projects/${project.id}/jobs`,{method:'POST',body:{version:1,prompt:'Build source',requestId:randomUUID(),modelId:'fixture-model',pricingVersion:models.pricingVersion,quotedCredits:5}});
@@ -101,4 +102,27 @@ test('worker preserves a finished downloadable result when an edit wins the revi
   const zip=await f.request(`/api/jobs/${f.job.id}/export`,{binary:true});assert.ok(zip.includes(Buffer.from('client.lua')));
   await f.restart();assert.equal((await f.request(`/api/jobs/${f.job.id}`)).job.applicationError,job.applicationError);
   assert.equal((await f.request('/api/studio/credits')).wallet.balance,20);
+});
+
+test('DeepSeek provider snapshot reaches its adapter and atomically saves the validated result and credit settlement',async t=>{
+  const f=await fixture(t,'deepseek');let providerCalls=0,validations=0;
+  assert.equal(f.job.settings.provider,'deepseek');
+  const reply=await runJob(f.job,{
+    key:'deepseek-integration-fixture-key',preflight:async()=>{},wait:async()=>{},api:f.worker,
+    generator:async(job,files,options)=>generate(job,files,{...options,fetcher:async(address,request)=>{
+      providerCalls++;assert.equal(address,'https://api.deepseek.com/responses');
+      assert.equal(request.headers.authorization,'Bearer deepseek-integration-fixture-key');
+      const payload=JSON.parse(request.body);assert.deepEqual(payload.reasoning,{effort:'none'});
+      assert.equal(payload.text.format.strict,undefined);assert.equal(payload.prompt_cache_options,undefined);
+      return new Response(JSON.stringify({status:'completed',usage:{input_tokens:1000,output_tokens:200,input_tokens_details:{cached_tokens:400}},
+        output:[{type:'message',content:[{type:'output_text',text:JSON.stringify({summary:'Provider fixture result',changes:generatedFiles})}]}]}));
+    }}),
+    validator:async files=>{validations++;assert.deepEqual(files,generatedFiles);return {ok:true,checks:['Fixture validation passed; no live container was run.']};}
+  });
+  assert.equal(providerCalls,1);assert.equal(validations,1);assert.equal(reply.status,'applied');
+  const job=(await f.request(`/api/jobs/${f.job.id}`)).job;
+  assert.equal(job.provider,'deepseek');assert.equal(job.costMicros,1100);assert.equal(job.credits.state,'charged');
+  assert.deepEqual((await f.request(`/api/projects/${f.project.id}`)).project.files,generatedFiles);
+  assert.equal((await f.request('/api/studio/credits')).wallet.balance,20);
+  assert.equal(f.store.db.prepare("SELECT count(*) n FROM studio_credit_ledger WHERE kind='charged'").get().n,1);
 });

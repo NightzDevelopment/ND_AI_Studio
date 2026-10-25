@@ -5,13 +5,20 @@ import { memberRoles, discordRequest } from './studio-discord.mjs';
 
 export function createStudio({ store, config, catalog, required, mutation, readJson, json, fetcher = fetch }) {
   migrateStudio(store);
-  const models = createModels({store,actor,readJson,json});
+  const models = createModels({store,actor,readJson,json,workerReady});
   const owners = new Set(config.ownerIds || []);
   const isOwner = user => Boolean(user && owners.has(user.discord_id));
   const blocked = id => control(store, id).status === 'suspended';
-  function workerReady() {
+  function workerProviders() {
+    const row = store.db.prepare('SELECT providers FROM studio_worker_providers WHERE id=1').get();
+    return row ? JSON.parse(row.providers) : ['openai'];
+  }
+  function workerReady(provider = null) {
     const row = store.db.prepare('SELECT * FROM studio_worker WHERE id=1').get();
-    return Boolean(config.workerToken && row?.ready && row.checked_at > Date.now() - 45000);
+    return Boolean(config.workerToken && row?.ready && row.checked_at > Date.now() - 45000 && (provider === null || workerProviders().includes(provider)));
+  }
+  function readyProviders() {
+    return workerReady() ? workerProviders() : [];
   }
   async function actor(req, write = false, permission = null) {
     const session = write ? mutation(req) : required(req), user = store.user(session.user_id);
@@ -68,11 +75,16 @@ export function createStudio({ store, config, catalog, required, mutation, readJ
         insist(method === 'POST',405,'Use POST for worker requests.');
         const body = await readJson(req,1048576);
         if (path === '/api/worker/status') {
-          fields(body,[]); json(res,200,{ ready:workerReady() }); return true;
+          fields(body,[]); json(res,200,{ ready:workerReady(), providers:readyProviders() }); return true;
         }
         if (path === '/api/worker/heartbeat') {
-          fields(body,['ready']); insist(typeof body.ready === 'boolean',400,'Invalid worker readiness.');
-          store.db.prepare('INSERT INTO studio_worker VALUES(1,?,?) ON CONFLICT(id) DO UPDATE SET checked_at=excluded.checked_at,ready=excluded.ready').run(Date.now(),Number(body.ready));
+          fields(body,['ready','providers']); insist(typeof body.ready === 'boolean',400,'Invalid worker readiness.');
+          const providers = body.providers === undefined ? ['openai'] : body.providers;
+          insist(Array.isArray(providers) && providers.length <= 2 && providers.every(provider => ['openai','deepseek'].includes(provider)) && new Set(providers).size === providers.length,400,'Invalid worker providers.');
+          store.transaction(() => {
+            store.db.prepare('INSERT INTO studio_worker VALUES(1,?,?) ON CONFLICT(id) DO UPDATE SET checked_at=excluded.checked_at,ready=excluded.ready').run(Date.now(),Number(body.ready));
+            store.db.prepare('INSERT INTO studio_worker_providers VALUES(1,?) ON CONFLICT(id) DO UPDATE SET providers=excluded.providers').run(JSON.stringify(providers));
+          });
           json(res,200,{ ok:true }); return true;
         }
         if (path === '/api/worker/claim') {
@@ -85,10 +97,12 @@ export function createStudio({ store, config, catalog, required, mutation, readJ
               if (blocked(user.id) || p.archived || !allowed(p.tool_id,user)) {
                 store.db.prepare("UPDATE studio_jobs SET status='cancelled',updated_at=? WHERE id=?").run(new Date().toISOString(),row.id); models.settle(row.id,'released'); continue;
               }
+              const settings = JSON.parse(row.settings);
+              if (!workerReady(settings.provider || 'openai')) continue;
               const lease = randomBytes(32).toString('base64url');
               store.db.prepare("UPDATE studio_jobs SET status='running',lease=?,lease_until=?,updated_at=? WHERE id=? AND status='queued'").run(digest(lease),Date.now()+120000,new Date().toISOString(),row.id);
               event(store,row.id,'planning','Worker claimed the build.');
-              claimed = { id:row.id, lease, prompt:row.prompt, applicationMode:row.application_mode, project:snapshot(store,p,row.base_version), settings:JSON.parse(row.settings) }; break;
+              claimed = { id:row.id, lease, prompt:row.prompt, applicationMode:row.application_mode, project:snapshot(store,p,row.base_version), settings }; break;
             }
           });
           json(res,200,{ job:claimed }); return true;
@@ -152,7 +166,7 @@ export function createStudio({ store, config, catalog, required, mutation, readJ
       }
       if (method === 'GET' && path === '/api/studio/session') {
         const a = await actor(req);
-        json(res,200,{ owner:a.owner, permissions:a.permissions, controls:control(store,a.user.id), workerReady:workerReady(),
+        json(res,200,{ owner:a.owner, permissions:a.permissions, controls:control(store,a.user.id), workerReady:workerReady(), workerProviders:readyProviders(),
           tools:IMPLEMENTED_TOOLS.map(id => ({ id, enabled:allowed(id,a.user), workerReady:workerReady() })) }); return true;
       }
       if (method === 'POST' && path === '/api/studio/roles/refresh') {
@@ -163,7 +177,7 @@ export function createStudio({ store, config, catalog, required, mutation, readJ
         const permission = path.includes('/users') ? (method === 'GET' ? 'users:read' : 'users:manage') : path.includes('/projects') ? (method === 'GET' ? 'projects:read' : 'projects:manage') : path.includes('/audit') ? 'audit:read' : path.includes('/tools') ? 'tools:manage' : 'settings:manage';
         const a = await actor(req,method !== 'GET',permission);
         if (method === 'GET' && path === '/api/admin/settings') {
-          json(res,200,{ settings:studioSettings(store), permissions:PERMISSIONS, botConfigured:Boolean(config.botToken), workerConfigured:Boolean(config.workerToken), workerReady:workerReady(), ownerConfigured:owners.size > 0 }); return true;
+          json(res,200,{ settings:studioSettings(store), permissions:PERMISSIONS, botConfigured:Boolean(config.botToken), workerConfigured:Boolean(config.workerToken), workerReady:workerReady(), workerProviders:readyProviders(), ownerConfigured:owners.size > 0 }); return true;
         }
         if (method === 'PATCH' && path === '/api/admin/settings') {
           insist(a.owner,403,'Only the configured owner can change role mappings and provider settings.');
@@ -308,6 +322,7 @@ export function createStudio({ store, config, catalog, required, mutation, readJ
           const id=randomBytes(16).toString('hex'), now=new Date().toISOString();
           store.transaction(() => {
             const s=models.select(body);
+            insist(workerReady(s.provider || 'openai'),503,'The connected worker has no configured credential for the selected provider. Choose a supported model or configure that provider privately on the worker.');
             const limits=control(store,a.user.id), day=now.slice(0,10);
             const usage=store.db.prepare("SELECT count(*) n,coalesce(sum(CASE WHEN status IN ('queued','running') THEN reserve ELSE cost END),0) cost FROM studio_jobs WHERE user_id=? AND created_at>=?").get(a.user.id,day);
             insist(usage.n < limits.daily_limit && usage.cost+s.maxBudgetMicros <= limits.daily_budget,429,'Your daily build or spending limit has been reached.');
