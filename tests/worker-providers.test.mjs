@@ -119,13 +119,115 @@ test('DeepSeek cancellation and budget checks preserve abort signals and prevent
   controller.abort();await assert.rejects(pending);assert.equal(called,1);
 });
 
-test('unknown cache write billing retains a conservative reservation instead of claiming known zero usage',async()=>{
-  const current={...job,settings:{...settings,cacheWrite30mUsdPerMillion:null,cacheWrite12hUsdPerMillion:null}},receipts=[];let generated=0;
+test('unconfigured cache write prices preserve validated files with an explicit full reservation',async()=>{
+  const current={...job,settings:{...settings,cacheWrite30mUsdPerMillion:null,cacheWrite12hUsdPerMillion:null}},receipts=[];let generated=0,validated=0;
   await runJob(current,{key:'fixture-private-key',preflight:async()=>{},generator:async(current,files,options)=>{
     generated++;return generate(current,files,{...options,fetcher:async()=>response({usage:{input_tokens:100,output_tokens:20,input_tokens_details:{cache_write_tokens:30,cache_write_tokens_details:{ttl_30m_tokens:30,ttl_12h_tokens:0}}}})});
-  },api:async(path,body)=>{if(path==='/api/worker/complete')receipts.push(body);return {};}});
+  },validator:async source=>{validated++;assert.deepEqual(source,[...files].sort((a,b)=>a.path.localeCompare(b.path)));return {ok:true,kind:'ok',checks:['Syntax passed.']};},api:async(path,body)=>{if(path==='/api/worker/complete')receipts.push(body);return {};}});
   assert.equal(generated,1);assert.equal(receipts.length,1);assert.equal(receipts[0].costMicros,current.settings.maxBudgetMicros);
-  assert.equal(receipts[0].result.files,undefined);assert.ok(receipts[0].result.error);
+  assert.equal(validated,1);assert.equal(receipts[0].result.error,undefined);assert.equal(receipts[0].result.files.length,2);
+  assert.deepEqual(receipts[0].result.accounting,{status:'unreconciled',reason:'cache-write-price-unconfigured'});
+});
+
+test('strict pricing tags only the recognized unavailable cache lifetime or price cases',()=>{
+  const missingLifetime={input_tokens:100,output_tokens:20,input_tokens_details:{cached_tokens:10,cache_write_tokens:30}};
+  assert.throws(()=>price(missingLifetime,settings),error=>{
+    assert.deepEqual(error.providerAccounting,{status:'unreconciled',reason:'cache-write-lifetimes-unavailable'});return true;
+  });
+  const measured={...missingLifetime,input_tokens_details:{...missingLifetime.input_tokens_details,cache_write_tokens_details:{ttl_30m_tokens:30,ttl_12h_tokens:0}}};
+  assert.throws(()=>price(measured,{...settings,cacheWrite30mUsdPerMillion:null}),error=>{
+    assert.deepEqual(error.providerAccounting,{status:'unreconciled',reason:'cache-write-price-unconfigured'});return true;
+  });
+  assert.throws(()=>price(measured,{...settings,provider:'deepseek'}),error=>error.providerAccounting===undefined);
+});
+
+test('completed JSON output with missing cache lifetimes preserves source without guessing a TTL or another request',async()=>{
+  const usage={input_tokens:100,output_tokens:20,input_tokens_details:{cached_tokens:10,cache_write_tokens:30}};
+  const prior=23456;let requests=0;
+  const output=await generate(job,[],{key:'fixture-private-key',spent:prior,fetcher:async()=>{requests++;return response({usage});}});
+  assert.equal(requests,1);assert.deepEqual(output.files,[...files].sort((a,b)=>a.path.localeCompare(b.path)));
+  assert.equal(output.cost,settings.maxBudgetMicros-prior);
+  assert.deepEqual(output.accounting,{status:'unreconciled',reason:'cache-write-lifetimes-unavailable'});
+  assert.equal('ttl' in output.accounting,false);
+});
+
+test('invalid core token and cache meters still fail as unknown outcomes without a pricing fallback',async()=>{
+  const usages=[{}, {input_tokens:-1,output_tokens:20}, {input_tokens:100,output_tokens:'20'},
+    {input_tokens:100,output_tokens:20,input_tokens_details:{cached_tokens:101}},
+    {input_tokens:100,output_tokens:20,input_tokens_details:{cache_write_tokens:-1}},
+    {input_tokens:100,output_tokens:20,input_tokens_details:{cached_tokens:80,cache_write_tokens:30}},
+    {input_tokens:100,output_tokens:20,input_tokens_details:{cache_write_tokens:30,cache_write_tokens_details:{ttl_30m_tokens:30}}},
+    {input_tokens:100,output_tokens:20,input_tokens_details:{cache_write_tokens:30,cache_write_tokens_details:{ttl_30m_tokens:30,ttl_12h_tokens:'0'}}},
+    {input_tokens:100,output_tokens:20,input_tokens_details:{cache_write_tokens:30,cache_write_tokens_details:{ttl_30m_tokens:20,ttl_12h_tokens:20}}}];
+  for(const usage of usages){
+    let requests=0;
+    await assert.rejects(generate(job,[],{key:'fixture-private-key',fetcher:async()=>{requests++;return response({usage});}}),error=>error.providerCostMicros===undefined&&error.providerAccounting===undefined);
+    assert.equal(requests,1);
+  }
+});
+
+test('unpriced responses never turn malformed, refused or unsafe generated output into deliverable files',async()=>{
+  const usage={input_tokens:100,output_tokens:20,input_tokens_details:{cache_write_tokens:30}};
+  for(const extra of [{status:'incomplete'},
+    {output:[{type:'message',content:[{type:'refusal',refusal:'Declined'}]}]},
+    {output:[{type:'message',content:[{type:'output_text',text:'{broken JSON'}]}]},
+    {output:[{type:'message',content:[{type:'output_text',text:JSON.stringify({summary:'Unsafe',changes:[{path:'../escape.lua',content:'x'}]})}]}]},
+  ]){
+    let requests=0;
+    await assert.rejects(generate(job,[],{key:'fixture-private-key',spent:123,fetcher:async()=>{requests++;return response({usage,...extra});}}),error=>{
+      assert.equal(error.providerCostMicros,settings.maxBudgetMicros-123);
+      assert.deepEqual(error.providerAccounting,{status:'unreconciled',reason:'cache-write-lifetimes-unavailable'});return true;
+    });
+    assert.equal(requests,1);
+  }
+});
+
+test('fully priced usage above the build reservation remains its reported amount and is never clamped',async()=>{
+  const output=await generate(job,[],{key:'fixture-private-key',fetcher:async()=>response({usage:{input_tokens:1000000,output_tokens:0}})});
+  assert.equal(output.cost,2000000);assert.equal(output.accounting,undefined);
+});
+
+test('unpriced writes cannot conceal known output, input, write-bucket or long-context costs above the budget',async()=>{
+  const cases=[
+    {name:'reported output',usage:{input_tokens:50,output_tokens:110000,input_tokens_details:{cache_write_tokens:50}},minimum:1100000,reason:'cache-write-lifetimes-unavailable'},
+    {name:'ordinary and cached input',usage:{input_tokens:1000000,output_tokens:0,input_tokens_details:{cached_tokens:500000,cache_write_tokens:1}},minimum:1249998,reason:'cache-write-lifetimes-unavailable'},
+    {name:'known write bucket',settings:{cacheWrite30mUsdPerMillion:20,cacheWrite12hUsdPerMillion:null},usage:{input_tokens:100000,output_tokens:0,input_tokens_details:{cache_write_tokens:100000,cache_write_tokens_details:{ttl_30m_tokens:99999,ttl_12h_tokens:1}}},minimum:1999980,reason:'cache-write-price-unconfigured'},
+    {name:'whole-request context tier',settings:{longContextThreshold:272000,longContextInputMultiplier:2,longContextOutputMultiplier:1.5},usage:{input_tokens:300000,output_tokens:60000,input_tokens_details:{cached_tokens:200000,cache_write_tokens:99999}},minimum:1100004,reason:'cache-write-lifetimes-unavailable'},
+  ];
+  for(const item of cases){
+    const current={...job,settings:{...settings,cacheWritePolicy:'disabled',...item.settings}},receipts=[];let requests=0,validations=0;
+    await runJob(current,{key:'fixture-private-key',preflight:async()=>{},
+      generator:(current,source,options)=>generate(current,source,{...options,fetcher:async()=>{requests++;return response({usage:item.usage});}}),
+      validator:async()=>{validations++;return {ok:true,kind:'ok',checks:[]};},
+      api:async(path,body)=>{if(path==='/api/worker/complete')receipts.push(body);return {};}
+    });
+    assert.equal(requests,1,item.name);assert.equal(validations,0,item.name);assert.equal(receipts.length,1,item.name);
+    assert.equal(receipts[0].costMicros,item.minimum,item.name);assert.equal(receipts[0].result.files,undefined,item.name);
+    assert.match(receipts[0].result.error,/only a known minimum/,item.name);
+    assert.deepEqual(receipts[0].result.accounting,{status:'unreconciled',reason:item.reason},item.name);
+  }
+});
+
+test('an unpriced repair compares its known minimum against the remaining budget after prior usage',async()=>{
+  const current={...job,settings:{...settings,maxBudgetMicros:50000,cacheWritePolicy:'disabled',cacheWrite30mUsdPerMillion:20,cacheWrite12hUsdPerMillion:null}},receipts=[],spent=[];
+  let requests=0,validations=0;
+  await runJob(current,{key:'fixture-private-key',preflight:async()=>{},
+    generator:(current,source,options)=>{spent.push(options.spent);return generate(current,source,{...options,fetcher:async()=>{
+      requests++;return response({usage:requests===1?{input_tokens:4000,output_tokens:200}:{input_tokens:2200,output_tokens:20,input_tokens_details:{cache_write_tokens:2001,cache_write_tokens_details:{ttl_30m_tokens:2000,ttl_12h_tokens:1}}}});
+    }});},
+    validator:async()=>{validations++;return {ok:false,kind:'source',checks:['Source needs repair.']};},
+    api:async(path,body)=>{if(path==='/api/worker/complete')receipts.push(body);return {};}
+  });
+  assert.equal(requests,2);assert.equal(validations,1);assert.deepEqual(spent,[0,10000]);
+  assert.equal(receipts.length,1);assert.equal(receipts[0].costMicros,50598);assert.ok(receipts[0].costMicros>current.settings.maxBudgetMicros);
+  assert.equal(receipts[0].result.files,undefined);assert.match(receipts[0].result.error,/remaining build budget/);
+  assert.deepEqual(receipts[0].result.accounting,{status:'unreconciled',reason:'cache-write-price-unconfigured'});
+});
+
+test('overflowing known usage never becomes a successful full-reservation fallback',async()=>{
+  await assert.rejects(generate(job,[],{key:'fixture-private-key',fetcher:async()=>response({usage:{input_tokens:Number.MAX_SAFE_INTEGER,output_tokens:Number.MAX_SAFE_INTEGER,input_tokens_details:{cache_write_tokens:1}}})}),error=>{
+    assert.match(error.message,/could not be safely calculated/);assert.equal(error.providerAccounting,undefined);assert.equal(error.providerCostMicros,undefined);return true;
+  });
 });
 
 test('worker installer preserves DeepSeek-only and unrelated private settings without prompting',t=>{

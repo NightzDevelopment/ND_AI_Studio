@@ -22,7 +22,7 @@ export async function runJob(job,{ key,image,api,generator=generate,validator=va
   const controller=new AbortController();
   const abort=()=>controller.abort(); signal?.addEventListener('abort',abort,{once:true});
   if (signal?.aborted) controller.abort();
-  const auth={ id:job.id,lease:job.lease }; let cost=0, uncertain=false, heartbeatBusy=false, completion;
+  const auth={ id:job.id,lease:job.lease }; let cost=0, uncertain=false, heartbeatBusy=false, completion,accounting;
   const preview=createPreviewPublisher({api,auth,signal:controller.signal,onRevoked:()=>controller.abort()});
   const progress=async(stage,message)=>api('/api/worker/progress',{...auth,...(stage ? {stage,message} : {})});
   const timer=setInterval(async()=>{
@@ -46,8 +46,9 @@ export async function runJob(job,{ key,image,api,generator=generate,validator=va
       uncertain=true;
       const generated=await generator(job,files,{key,signal:controller.signal,spent:cost,diagnostics:checks,onPreview:changes=>preview.offer(attempt+1,changes)});
       uncertain=false; cost+=generated.cost; files=generated.files; summary=generated.summary;
+      accounting=generated.accounting || accounting;
       controller.signal.throwIfAborted();
-      await progress('checking','Checking project structure and syntax in an offline, resource-limited container.');
+      await progress('checking',accounting ? 'Cache-write cost needs reconciliation. The full API budget is retained while source is checked in the offline validator.' : 'Checking project structure and syntax in an offline, resource-limited container.');
       controller.signal.throwIfAborted();
       const result=await validator(files,job.project.tool_id,{image,signal:controller.signal}); checks=result.checks;
       controller.signal.throwIfAborted();
@@ -59,17 +60,22 @@ export async function runJob(job,{ key,image,api,generator=generate,validator=va
         controller.signal.throwIfAborted();
         completion={...auth,costMicros:cost,result:{files,summary,checks}}; break;
       }
+      if(accounting) {
+        completion={...auth,costMicros:cost,result:{error:`Generated source did not pass validation. Cache-write cost needs reconciliation, so no further provider request was sent. ${checks.filter(check=>!check.includes('passed')&&!check.startsWith('Not tested')).slice(0,3).join(' ').slice(0,700)}`}};break;
+      }
     }
     completion ||= {...auth,costMicros:cost,result:{error:`Validation did not pass within the call limit. ${checks.filter(check=>!check.includes('passed')&&!check.startsWith('Not tested')).slice(0,3).join(' ').slice(0,700)}`}};
   } catch (error) {
     // Unknown provider outcomes retain the full reservation. Cancellation never claims a refund.
     if (uncertain && Number.isSafeInteger(error?.providerCostMicros) && error.providerCostMicros>=0) {
       cost+=error.providerCostMicros; uncertain=false;
+      accounting=error.providerAccounting || accounting;
     }
     const reported=uncertain ? Math.max(cost,job.settings.maxBudgetMicros) : cost;
     const message=controller.signal.aborted ? 'Worker interrupted or build access revoked. Provider work already accepted may still be billed.' : (error?.status ? error.message : 'Build failed. No automatic retry was attempted; inspect the worker configuration and provider billing.');
     completion={...auth,costMicros:reported,result:{error:message.slice(0,1000)}};
   } finally { preview.stop();clearInterval(timer); signal?.removeEventListener('abort',abort); }
+  if(accounting)completion.result.accounting=accounting;
   // Terminal progress rejects a completed lease. Stop heartbeats before delivery and keep
   // delivery failures outside the generation catch so a saved result cannot become an error.
   return deliverCompletion(api,completion,wait);

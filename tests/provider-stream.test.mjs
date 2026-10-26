@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { generate } from '../worker/provider.mjs';
 import { partialChanges } from '../worker/code-preview.mjs';
+import { runJob } from '../worker/start.mjs';
 
 const settings={model:'fixture-model',maxOutputTokens:1024,maxCalls:2,maxBudgetMicros:1000000,inputUsdPerMillion:1,outputUsdPerMillion:2};
 const job={id:'stream-job',lease:'stream-lease',prompt:'Build source',settings,project:{name:'Test',tool_id:'ai-script-generator',target:'Standalone',requirements:'Test source',files:[]}};
@@ -57,6 +58,33 @@ test('stream truncation, malformed framing, invalid UTF-8 and missing usage rema
     'event: response.completed\ndata: {"type":"response.output_text.delta","delta":"x"}\n\n',Buffer.from([0xff,0xfe]),
     event('response.completed',{response:completed({usage:{}})})];
   for(const raw of malformed)await assert.rejects(invoke(stream(raw)),error=>error.providerCostMicros===undefined);
+});
+
+test('completed SSE source with aggregate cache writes is validated and delivered with the full unpriced reservation',async()=>{
+  const usage={input_tokens:100,output_tokens:200,input_tokens_details:{cached_tokens:10,cache_write_tokens:30}};
+  const receipts=[];let requests=0,validated=0;
+  await runJob(job,{key:'fixture-private-provider-key',preflight:async()=>{},
+    generator:async(current,base,options)=>generate(current,base,{...options,fetcher:async(_,request)=>{
+      requests++;assert.equal(JSON.parse(request.body).stream,true);
+      return stream(event('response.output_text.delta',{delta:source})+event('response.completed',{response:completed({usage})}),{fragment:1});
+    }}),
+    validator:async source=>{validated++;assert.deepEqual(source,[...files].sort((a,b)=>a.path.localeCompare(b.path)));return {ok:true,kind:'ok',checks:['Syntax passed.']};},
+    api:async(path,body)=>{if(path==='/api/worker/complete')receipts.push(body);return {};}
+  });
+  assert.equal(requests,1);assert.equal(validated,1);assert.equal(receipts.length,1);
+  assert.equal(receipts[0].costMicros,settings.maxBudgetMicros);assert.equal(receipts[0].result.error,undefined);
+  assert.deepEqual(receipts[0].result.accounting,{status:'unreconciled',reason:'cache-write-lifetimes-unavailable'});
+});
+
+test('unpriced SSE final usage does not salvage incomplete or malformed authoritative output',async()=>{
+  const usage={input_tokens:100,output_tokens:200,input_tokens_details:{cache_write_tokens:30}};
+  const invalid=completed({usage,output:[{type:'message',content:[{type:'output_text',text:'{malformed final source'}]}]});
+  for(const [type,response]of [['response.incomplete',completed({usage,status:'incomplete'})],['response.completed',invalid]]){
+    await assert.rejects(invoke(stream(event('response.output_text.delta',{delta:source})+event(type,{response}))),error=>{
+      assert.equal(error.providerCostMicros,settings.maxBudgetMicros);
+      assert.deepEqual(error.providerAccounting,{status:'unreconciled',reason:'cache-write-lifetimes-unavailable'});return true;
+    });
+  }
 });
 
 test('decoded output and event lines remain bounded independently from stream framing overhead',async()=>{
