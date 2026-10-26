@@ -28,8 +28,8 @@ function version(value) {
   if (!Number.isSafeInteger(value) || value < 1) fail(400, 'A valid revision is required.');
   return value;
 }
-function briefData(body, tools) {
-  fields(body, ['name', 'requirements', 'toolId', 'target', 'version', 'sourceId']);
+function briefData(body, tools, extraFields = []) {
+  fields(body, ['name', 'requirements', 'toolId', 'target', 'version', 'sourceId', ...extraFields]);
   const tool = tools.find(item => item.id === body.toolId && item.category !== 'browse');
   if (!tool) fail(400, 'Choose a creation or conversion tool.');
   if (tool.engine === 'coding' && !FRAMEWORKS.includes(body.target)) fail(400, 'Invalid target framework.');
@@ -114,12 +114,15 @@ export function createApp({ config, store, catalog, identity = discordIdentity, 
     if (!session) fail(401, 'Your session ended. Sign in again before saving.');
     return session;
   }
-  function mutation(req) {
+  function mutation(req, expectedSession = null) {
     const session = required(req);
+    if (expectedSession && (session.hash !== expectedSession.hash || session.user_id !== expectedSession.user_id)) {
+      fail(401, 'Your session changed. Sign in again before saving.');
+    }
     if (req.headers.origin !== config.origin || !equal(req.headers['x-csrf-token'], session.csrf)) {
       fail(403, 'Security check failed. Reload this page and try again.');
     }
-    rate(req, 'write', 90, 60000);
+    if (!expectedSession) rate(req, 'write', 90, 60000);
     return session;
   }
   const studio = createStudio({ store, config, catalog, required, mutation, readJson, json });
@@ -184,8 +187,11 @@ export function createApp({ config, store, catalog, identity = discordIdentity, 
       }
       if (method === 'POST' && ['/api/logout', '/api/logout-all'].includes(path)) {
         const session = mutation(req);
-        if (path === '/api/logout-all') store.db.prepare('DELETE FROM sessions WHERE user_id=?').run(session.user_id);
-        else store.db.prepare('DELETE FROM sessions WHERE hash=?').run(session.hash);
+        store.transaction(() => {
+          mutation(req, session);
+          if (path === '/api/logout-all') store.db.prepare('DELETE FROM sessions WHERE user_id=?').run(session.user_id);
+          else store.db.prepare('DELETE FROM sessions WHERE hash=?').run(session.hash);
+        });
         res.setHeader('set-cookie', cookie(config.sessionCookie, '', 0));
         return json(res, 200, { ok: true });
       }
@@ -195,8 +201,12 @@ export function createApp({ config, store, catalog, identity = discordIdentity, 
         const data = { displayName: text(body.displayName, 80, 'display name'), bio: text(body.bio, 500, 'bio', false),
           preferredFramework: body.preferredFramework, density: body.density, version: version(body.version) };
         if (!FRAMEWORKS.includes(data.preferredFramework) || !['comfortable', 'compact'].includes(data.density)) fail(400, 'Invalid preferences.');
-        const user = store.profile(session.user_id, data);
-        if (!user) fail(409, 'Your profile changed in another tab. Reload before saving.');
+        const user = store.transaction(() => {
+          mutation(req, session);
+          const saved = store.profile(session.user_id, data);
+          if (!saved) fail(409, 'Your profile changed in another tab. Reload before saving.');
+          return saved;
+        });
         return json(res, 200, { user: publicUser(user) });
       }
       if (method === 'GET' && path === '/api/account/export') {
@@ -218,6 +228,7 @@ export function createApp({ config, store, catalog, identity = discordIdentity, 
         });
         let imported = 0;
         store.transaction(() => {
+          mutation(req, session);
           for (const item of items) {
             if (store.db.prepare('SELECT 1 FROM briefs WHERE user_id=? AND source_id=?').get(session.user_id, item.sourceId)) continue;
             if (store.count(session.user_id) >= 100) fail(409, 'Your account has reached its 100-brief limit.');
@@ -227,24 +238,37 @@ export function createApp({ config, store, catalog, identity = discordIdentity, 
         return json(res, 200, { imported, briefs: store.list(session.user_id) });
       }
       if (method === 'POST' && path === '/api/briefs') {
-        const session = mutation(req), data = briefData(await readJson(req), catalog.tools);
-        store.transaction(() => {
+        const session = mutation(req), body = await readJson(req), data = briefData(body, catalog.tools, ['requestId']);
+        if (body.requestId !== undefined && (typeof body.requestId !== 'string' || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(body.requestId))) fail(400, 'Use a valid brief creation request ID.');
+        const requestId = body.requestId?.toLowerCase();
+        const fingerprint = hash(JSON.stringify({ name: data.name, requirements: data.requirements, toolId: data.toolId, target: data.target }));
+        const creation = store.transaction(() => {
+          mutation(req, session);
+          const previous = requestId && store.briefCreateReceipt(session.user_id, requestId);
+          if (previous) {
+            if (previous.fingerprint !== fingerprint) fail(409, 'This request ID belongs to different brief content. Start a new brief request before saving changed content.');
+            const exists = Boolean(store.db.prepare('SELECT 1 FROM briefs WHERE user_id=? AND id=?').get(session.user_id, previous.brief_id));
+            return { requestId, briefId: previous.brief_id, replayed: true, deleted: !exists };
+          }
           if (store.count(session.user_id) >= 100) fail(409, 'Your account has reached its 100-brief limit.');
-          store.create(session.user_id, data);
+          const briefId = store.create(session.user_id, data);
+          if (requestId) store.rememberBriefCreate(session.user_id, requestId, fingerprint, briefId);
+          return { requestId, briefId, replayed: false, deleted: false };
         });
-        return json(res, 201, { briefs: store.list(session.user_id) });
+        return json(res, creation.replayed ? 200 : 201, { briefs: store.list(session.user_id), ...(requestId ? creation : {}) });
       }
       const match = /^\/api\/briefs\/([a-f0-9-]{36})$/.exec(path);
       if (match && ['PATCH', 'DELETE'].includes(method)) {
         const session = mutation(req), body = await readJson(req), revision = version(body.version);
-        if (!store.db.prepare('SELECT 1 FROM briefs WHERE user_id=? AND id=?').get(session.user_id, match[1])) fail(404, 'Brief not found.');
-        let changed;
-        if (method === 'PATCH') changed = store.update(session.user_id, match[1], briefData(body, catalog.tools));
-        else {
-          fields(body, ['version']);
-          changed = store.db.prepare('DELETE FROM briefs WHERE user_id=? AND id=? AND version=?').run(session.user_id, match[1], revision).changes;
-        }
-        if (!changed) fail(409, 'This brief changed in another tab. Reload the latest version before editing.');
+        const data = method === 'PATCH' ? briefData(body, catalog.tools) : null;
+        if (method === 'DELETE') fields(body, ['version']);
+        store.transaction(() => {
+          mutation(req, session);
+          if (!store.db.prepare('SELECT 1 FROM briefs WHERE user_id=? AND id=?').get(session.user_id, match[1])) fail(404, 'Brief not found.');
+          const changed = method === 'PATCH' ? store.update(session.user_id, match[1], data)
+            : store.db.prepare('DELETE FROM briefs WHERE user_id=? AND id=? AND version=?').run(session.user_id, match[1], revision).changes;
+          if (!changed) fail(409, 'This brief changed in another tab. Reload the latest version before editing.');
+        });
         return json(res, 200, { briefs: store.list(session.user_id) });
       }
       fail(404, 'Endpoint not found.');

@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes,randomUUID } from 'node:crypto';
 import { once } from 'node:events';
+import { request as httpRequest } from 'node:http';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -39,7 +40,22 @@ async function fixture(t,owner=true,database=':memory:') {
   const queue=async(p,extra={})=>call(`/api/projects/${p.id}/jobs`,{method:'POST',body:{version:p.version,prompt:'Build a simple resource',requestId:randomUUID(),...extra}});
   const claim=async()=>{const r=await call('/api/worker/claim',{method:'POST',body:{},user:null,worker:true});assert.equal(r.status,200,JSON.stringify(r.data));return r.data.job;};
   const complete=async(job,result={files:[{path:'client.lua',content:'print(1)'}],summary:'Generated resource',checks:['Syntax passed.']},costMicros=100)=>call('/api/worker/complete',{method:'POST',body:{id:job.id,lease:job.lease,result,costMicros},worker:true,user:null});
-  return {store,config,credentials,call,create,enabled,errors,close,queue,claim,complete};
+  const partial=async(path,{method='POST',body={},user=OWNER}={})=>{
+    const raw=JSON.stringify(body),credential=credentials[user];let entered,failed;
+    const reading=new Promise((resolve,reject)=>{entered=resolve;failed=reject;});
+    app.once('request',req=>req.on('newListener',name=>{if(name==='data')queueMicrotask(entered);}));
+    let send;
+    const response=new Promise((resolve,reject)=>{
+      send=httpRequest(origin+path,{method,headers:{cookie:`${config.sessionCookie}=${credential.session}`,origin:config.origin,'x-csrf-token':credential.csrf,'content-type':'application/json','content-length':Buffer.byteLength(raw)}},incoming=>{
+        const parts=[];incoming.on('data',part=>parts.push(part));incoming.on('end',()=>resolve({status:incoming.statusCode,data:JSON.parse(Buffer.concat(parts).toString())}));
+      });
+      send.on('error',error=>{failed(error);reject(error);});
+      send.write(raw.slice(0,-1));
+    });
+    response.catch(()=>{});t.after(()=>send.destroy());await reading;
+    return {finish:()=>{send.end(raw.slice(-1));return response;}};
+  };
+  return {store,config,credentials,call,create,enabled,errors,close,queue,claim,complete,partial};
 }
 test('owner access is explicit, never awarded to the first account',async t=>{const f=await fixture(t,false);assert.equal((await f.call('/api/admin/settings')).status,403);assert.equal((await f.call('/api/studio/session')).data.owner,false);});
 test('anonymous and cross-account operations fail closed',async t=>{const f=await fixture(t);assert.equal((await f.call('/api/projects',{user:null})).status,401);const p=await f.create();assert.equal((await f.call(`/api/projects/${p.id}`,{user:OTHER})).status,404);assert.equal((await f.call('/api/admin/settings',{user:OTHER})).status,403);});
@@ -327,4 +343,64 @@ test('provider advertisements persist through an API restart and do not revoke a
   await next.call('/api/worker/heartbeat',{method:'POST',body:{ready:true,providers:[]},user:null,worker:true});
   assert.equal((await next.complete(job)).data.status,'applied');
   const status=await next.call('/api/worker/status',{method:'POST',body:{},user:null,worker:true});assert.deepEqual(status.data,{ready:true,providers:[]});
+});
+
+test('queued cancellation that overlaps a worker claim preserves pending credits for potential provider spend',async t=>{
+  const f=await fixture(t);await f.enabled();providerCatalog(f);const p=await f.create();const queued=await queueProvider(f,p,'test-openai');assert.equal(queued.status,202);
+  const pending=await f.partial(`/api/jobs/${queued.data.job.id}/cancel`);
+  const claimed=await f.claim();assert.equal(claimed.id,queued.data.job.id);
+  const cancelled=await pending.finish();assert.equal(cancelled.status,200);
+  const job=f.store.db.prepare('SELECT status,cost FROM studio_jobs WHERE id=?').get(claimed.id);assert.equal(job.status,'cancelled');assert.equal(job.cost,100000);
+  const wallet=(await f.call('/api/studio/credits')).data.wallet;assert.equal(wallet.balance,50);assert.equal(wallet.reserved,0);assert.equal(wallet.pending,5);assert.equal(wallet.available,45);
+  assert.equal(f.store.db.prepare("SELECT count(*) n FROM studio_credit_ledger WHERE job_id=? AND kind='released'").get(claimed.id).n,0);
+});
+
+test('a project change during a partial enqueue rejects the stale build before reserving credits',async t=>{
+  const f=await fixture(t);await f.enabled();providerCatalog(f);const p=await f.create(),quote=(await f.call('/api/studio/models')).data;
+  const body={version:1,prompt:'Build the original snapshot',requestId:randomUUID(),modelId:'test-openai',pricingVersion:quote.pricingVersion,quotedCredits:5};
+  const pending=await f.partial(`/api/projects/${p.id}/jobs`,{body});
+  assert.equal((await f.call(`/api/projects/${p.id}/files`,{method:'PUT',body:{version:1,path:'new.lua',content:'print("new saved source")'}})).status,200);
+  const stale=await pending.finish();assert.equal(stale.status,409);assert.match(stale.data.error,/Project changed/);
+  assert.equal(f.store.db.prepare('SELECT count(*) n FROM studio_jobs').get().n,0);assert.equal(f.store.db.prepare('SELECT count(*) n FROM studio_credit_ledger').get().n,0);
+});
+
+for(const operation of ['create','save','details','restore','queue','cancel','apply','admin-settings','admin-tools','models','grant','resolve'])test(`a revoked session cannot finish a partial ${operation} request`,{timeout:10000},async t=>{
+  const f=await fixture(t);await f.enabled();providerCatalog(f);let p=await f.create(),path,body={},method='POST';
+  if(['save','restore','details'].includes(operation)){
+    p=(await f.call(`/api/projects/${p.id}/files`,{method:'PUT',body:{version:1,path:'client.lua',content:'print("original")'}})).data.project;
+  }
+  if(operation==='create'){path='/api/projects';body={name:'Unauthorized project',toolId:'ai-script-generator',target:'Standalone',requirements:'Test'};}
+  if(operation==='save'){path=`/api/projects/${p.id}/files`;method='PUT';body={version:p.version,path:'client.lua',content:'print("revoked")'};}
+  if(operation==='details'){path=`/api/projects/${p.id}`;method='PATCH';body={version:p.version,name:'Revoked rename',requirements:p.requirements,favorite:false,archived:false};}
+  if(operation==='restore'){path=`/api/projects/${p.id}/restore`;body={version:p.version,revision:1};}
+  if(operation==='queue'){
+    const quote=(await f.call('/api/studio/models')).data;path=`/api/projects/${p.id}/jobs`;body={version:1,prompt:'Revoked build',requestId:randomUUID(),modelId:'test-openai',pricingVersion:quote.pricingVersion,quotedCredits:5};
+  }
+  if(['cancel','apply','resolve'].includes(operation)){
+    const created=await queueProvider(f,p,'test-openai');assert.equal(created.status,202);const job=await f.claim();path=`/api/jobs/${job.id}/${operation}`;
+    if(operation==='apply'){
+      f.store.db.prepare("UPDATE studio_jobs SET application_mode='review' WHERE id=?").run(job.id);await f.complete(job);body={version:p.version};
+    }
+    if(operation==='resolve'){
+      await f.complete(job,{error:'Provider outcome needs reconciliation.'},100);path='/api/admin/credits/resolve';body={jobId:job.id,action:'charged',reason:'Unauthorized settlement'};
+    }
+  }
+  if(operation==='admin-settings'){path='/api/admin/settings';method='PATCH';body={...studioSettings(f.store),model:'revoked-model'};}
+  if(operation==='admin-tools'){path='/api/admin/tools';method='PATCH';body={version:studioSettings(f.store).version,toolId:'ai-script-generator',mode:'disabled'};}
+  if(operation==='models'){path='/api/admin/models';method='PATCH';const old=(await f.call(path)).data;body={version:old.version,models:[],defaultModelId:'',creditsEnabled:false};}
+  if(operation==='grant'){path='/api/admin/credits';body={discordId:OTHER,amount:100,reason:'Revoked grant',requestId:randomUUID(),version:1};}
+  const before={projects:f.store.db.prepare('SELECT * FROM studio_projects ORDER BY id').all(),revisions:f.store.db.prepare('SELECT * FROM studio_revisions ORDER BY project_id,version').all(),jobs:f.store.db.prepare('SELECT * FROM studio_jobs ORDER BY id').all(),credits:f.store.db.prepare('SELECT * FROM studio_credit_ledger ORDER BY id').all(),models:f.store.db.prepare('SELECT * FROM studio_model_settings').all(),settings:studioSettings(f.store)};
+  const pending=await f.partial(path,{method,body});f.store.db.prepare('DELETE FROM sessions WHERE hash=?').run(hash(f.credentials[OWNER].session));
+  const denied=await pending.finish();assert.equal(denied.status,401,JSON.stringify(denied.data));
+  const after={projects:f.store.db.prepare('SELECT * FROM studio_projects ORDER BY id').all(),revisions:f.store.db.prepare('SELECT * FROM studio_revisions ORDER BY project_id,version').all(),jobs:f.store.db.prepare('SELECT * FROM studio_jobs ORDER BY id').all(),credits:f.store.db.prepare('SELECT * FROM studio_credit_ledger ORDER BY id').all(),models:f.store.db.prepare('SELECT * FROM studio_model_settings').all(),settings:studioSettings(f.store)};
+  assert.deepEqual(after,before);
+});
+
+for(const invalidation of ['expired','csrf-rotated','identity-changed'])test(`an ${invalidation} session cannot finish a partial source save`,{timeout:10000},async t=>{
+  const f=await fixture(t);const p=await f.create(),pending=await f.partial(`/api/projects/${p.id}/files`,{method:'PUT',body:{version:1,path:'client.lua',content:'print("late mutation")'}}),session=hash(f.credentials[OWNER].session);
+  if(invalidation==='expired')f.store.db.prepare('UPDATE sessions SET expires_at=? WHERE hash=?').run(Date.now()-1,session);
+  if(invalidation==='csrf-rotated')f.store.db.prepare('UPDATE sessions SET csrf=? WHERE hash=?').run(randomBytes(32).toString('base64url'),session);
+  if(invalidation==='identity-changed')f.store.db.prepare('UPDATE sessions SET user_id=? WHERE hash=?').run(f.credentials[OTHER].user.id,session);
+  assert.equal((await pending.finish()).status,invalidation==='csrf-rotated'?403:401);
+  assert.equal(f.store.db.prepare('SELECT version FROM studio_projects WHERE id=?').get(p.id).version,1);assert.equal(f.store.db.prepare('SELECT count(*) n FROM studio_revisions WHERE project_id=?').get(p.id).n,1);
 });

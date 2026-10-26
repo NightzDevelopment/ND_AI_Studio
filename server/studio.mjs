@@ -1,10 +1,11 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto';
-import { StudioError, insist, fields, string, integer, digest, validateFiles, filePath, migrateStudio, studioSettings, settingsData, control, audit, event, project, snapshot, saveRevision, newProject, zipFiles, IMPLEMENTED_TOOLS, PERMISSIONS } from './studio-domain.mjs';
+import { StudioError, insist, fields, string, integer, digest, validateFiles, validatePreviewChanges, filePath, migrateStudio, studioSettings, settingsData, control, audit, event, project, snapshot, saveRevision, newProject, zipFiles, IMPLEMENTED_TOOLS, PERMISSIONS } from './studio-domain.mjs';
 import { createModels } from './studio-models.mjs';
 import { memberRoles, discordRequest } from './studio-discord.mjs';
 
-export function createStudio({ store, config, catalog, required, mutation, readJson, json, fetcher = fetch }) {
+export function createStudio({ store, config, catalog, required, mutation, readJson:readBody, json, fetcher = fetch }) {
   migrateStudio(store);
+  const actors = new WeakMap();
   const models = createModels({store,actor,readJson,json,workerReady});
   const owners = new Set(config.ownerIds || []);
   const isOwner = user => Boolean(user && owners.has(user.discord_id));
@@ -21,27 +22,49 @@ export function createStudio({ store, config, catalog, required, mutation, readJ
     return workerReady() ? workerProviders() : [];
   }
   async function actor(req, write = false, permission = null) {
-    const session = write ? mutation(req) : required(req), user = store.user(session.user_id);
+    const previous = actors.get(req);
+    const session = write ? mutation(req,previous?.session) : required(req), user = store.user(session.user_id);
+    if (previous) insist(session.user_id === previous.session.user_id && session.hash === previous.session.hash,401,'Your session changed. Sign in again before continuing.');
     insist(user && !blocked(user.id), 403, 'This Studio account is suspended.');
-    let permissions = [];
-    if (isOwner(user)) permissions = [...PERMISSIONS];
-    else if (permission || !write) {
-      const roles = await memberRoles(store, config, user, { refresh: write, fetcher });
-      const mappings = studioSettings(store).roleMappings;
-      permissions = [...new Set(roles.flatMap(role => mappings[role] || []))];
+    let roles = [], guildId = null;
+    if (!isOwner(user) && (permission || !write)) {
+      guildId = studioSettings(store).guildId;
+      roles = await memberRoles(store, config, user, { refresh: write, fetcher });
     }
-    if (permission) insist(permissions.includes(permission), 403, 'You do not have permission for this action.');
-    return { user, permissions, owner: isOwner(user) };
+    const check = () => {
+      const current = write ? mutation(req,session) : required(req);
+      insist(current.user_id === session.user_id && current.hash === session.hash,401,'Your session changed. Sign in again before continuing.');
+      const user = store.user(current.user_id), settings = studioSettings(store);
+      insist(user && !blocked(user.id),403,'This Studio account is suspended.');
+      insist(guildId === null || settings.guildId === guildId,409,'Discord configuration changed. Retry with current permissions.');
+      const permissions = isOwner(user) ? [...PERMISSIONS] : [...new Set(roles.flatMap(role => settings.roleMappings[role] || []))];
+      if (permission) insist(permissions.includes(permission),403,'You do not have permission for this action.');
+      return { user, permissions, owner:isOwner(user) };
+    };
+    const result = Object.assign(previous || {},check(),{session,write,permission,check});
+    actors.set(req,result);
+    return result;
+  }
+  async function readJson(req,limit) {
+    const body = await readBody(req,limit), proof = actors.get(req);
+    if (proof) await actor(req,proof.write,proof.permission);
+    return body;
   }
   function allowed(toolId, user) {
     const mode = studioSettings(store).tools[toolId];
     return IMPLEMENTED_TOOLS.includes(toolId) && (mode === 'members' || (mode === 'owner' && isOwner(user)));
   }
   function jobView(row, details = true) {
+    const live = row.status === 'running' && row.preview && row.lease_until > Date.now();
+    const user = live ? store.user(row.user_id) : null;
+    const source = user ? store.db.prepare('SELECT tool_id,archived FROM studio_projects WHERE id=? AND user_id=?').get(row.project_id,row.user_id) : null;
+    const previewVisible = Boolean(source && !source.archived && !blocked(user.id) && allowed(source.tool_id,user));
     return { ...models.describe(row), id: row.id, projectId: row.project_id, baseVersion: row.base_version, prompt: details ? row.prompt : undefined, status: row.status,
       applicationMode:row.application_mode, appliedVersion:row.applied_version, applicationError:row.application_error,
       costMicros: row.cost, reservedMicros: row.reserve, createdAt: row.created_at, updatedAt: row.updated_at,
       result: details && row.result ? JSON.parse(row.result) : null,
+      previewVersion:previewVisible ? row.preview_sequence : 0,
+      preview:details ? previewVisible ? JSON.parse(row.preview) : null : undefined,
       events: details ? store.db.prepare('SELECT id,stage,message,created_at AS createdAt FROM studio_events WHERE job_id=? ORDER BY id').all(row.id) : [] };
   }
   function completionView(row) {
@@ -49,7 +72,7 @@ export function createStudio({ store, config, catalog, required, mutation, readJ
   }
   function expireJobs() {
     const now = new Date().toISOString();
-    store.db.prepare("UPDATE studio_jobs SET status='failed',cost=reserve,lease=NULL,result=?,updated_at=? WHERE status='running' AND lease_until<?")
+    store.db.prepare("UPDATE studio_jobs SET status='failed',cost=reserve,lease=NULL,preview=NULL,result=?,updated_at=? WHERE status='running' AND lease_until<?")
       .run(JSON.stringify({ error: 'Worker lease expired. This job was not automatically retried. Reserved cost is retained until billing is reconciled.' }), now, Date.now());
   }
   function workerAuth(req) {
@@ -95,7 +118,7 @@ export function createStudio({ store, config, catalog, required, mutation, readJ
             for (const row of rows) {
               const p = project(store,row.user_id,row.project_id), user = store.user(row.user_id);
               if (blocked(user.id) || p.archived || !allowed(p.tool_id,user)) {
-                store.db.prepare("UPDATE studio_jobs SET status='cancelled',updated_at=? WHERE id=?").run(new Date().toISOString(),row.id); models.settle(row.id,'released'); continue;
+                store.db.prepare("UPDATE studio_jobs SET status='cancelled',preview=NULL,updated_at=? WHERE id=?").run(new Date().toISOString(),row.id); models.settle(row.id,'released'); continue;
               }
               const settings = JSON.parse(row.settings);
               if (!workerReady(settings.provider || 'openai')) continue;
@@ -106,6 +129,21 @@ export function createStudio({ store, config, catalog, required, mutation, readJ
             }
           });
           json(res,200,{ job:claimed }); return true;
+        }
+        if (path === '/api/worker/preview') {
+          fields(body,['id','lease','sequence','attempt','changes']);
+          insist(typeof body.id === 'string' && /^[a-f0-9]{32}$/.test(body.id) && typeof body.lease === 'string',400,'Invalid preview build identity.');
+          const sequence = integer(body.sequence,1,Number.MAX_SAFE_INTEGER,'preview sequence');
+          const attempt = integer(body.attempt,1,2,'preview attempt');
+          const changes = validatePreviewChanges(body.changes);
+          const reply = store.transaction(() => {
+            const row = workerJob(body), previous = row.preview ? JSON.parse(row.preview) : null;
+            insist(attempt <= JSON.parse(row.settings).maxCalls,400,'Preview attempt exceeds this build call limit.');
+            if (sequence <= row.preview_sequence || previous && attempt < previous.attempt) return { ok:true,accepted:false,previewVersion:row.preview_sequence };
+            store.db.prepare('UPDATE studio_jobs SET preview=?,preview_sequence=? WHERE id=?').run(JSON.stringify({sequence,attempt,changes}),sequence,row.id);
+            return { ok:true,accepted:true,previewVersion:sequence };
+          });
+          json(res,200,reply); return true;
         }
         fields(body,['id','lease','stage','message','result','costMicros']);
         if (path === '/api/worker/progress') {
@@ -153,7 +191,7 @@ export function createStudio({ store, config, catalog, required, mutation, readJ
                 applicationError = error.message;
               }
             }
-            store.db.prepare('UPDATE studio_jobs SET status=?,result=?,cost=?,lease=NULL,applied_version=?,application_error=?,completion_lease=?,completion_hash=?,updated_at=? WHERE id=?')
+            store.db.prepare('UPDATE studio_jobs SET status=?,result=?,cost=?,lease=NULL,preview=NULL,applied_version=?,application_error=?,completion_lease=?,completion_hash=?,updated_at=? WHERE id=?')
               .run(status,JSON.stringify(result),cost,appliedVersion,applicationError,digest(body.lease),fingerprint,new Date().toISOString(),row.id);
             models.settle(row.id,['review','applied'].includes(status) ? 'charged' : cost === 0 ? 'released' : 'pending');
             const message = status === 'applied' ? `Validated files saved as project revision ${appliedVersion}. Runtime behavior has not been tested.` : status === 'review' ? applicationError ? `Validated output preserved for comparison and ZIP export. ${applicationError}` : 'Validated files are ready for optional review. Runtime behavior has not been tested.' : result.error;
@@ -171,6 +209,7 @@ export function createStudio({ store, config, catalog, required, mutation, readJ
       }
       if (method === 'POST' && path === '/api/studio/roles/refresh') {
         const a = await actor(req,true); await memberRoles(store,config,a.user,{ refresh:true,fetcher });
+        a.check();
         json(res,200,{ ok:true }); return true;
       }
       if (path.startsWith('/api/admin')) {
@@ -183,6 +222,7 @@ export function createStudio({ store, config, catalog, required, mutation, readJ
           insist(a.owner,403,'Only the configured owner can change role mappings and provider settings.');
           const body = await readJson(req), next = settingsData(body); integer(body.version,1,1000000000,'settings revision');
           store.transaction(() => {
+            a.check();
             insist(store.db.prepare('UPDATE studio_settings SET value=?,version=version+1 WHERE id=1 AND version=?').run(JSON.stringify(next),body.version).changes,409,'Settings changed. Reload before saving.');
             store.db.prepare('DELETE FROM studio_roles').run(); audit(store,a.user.id,'settings.update','studio');
           });
@@ -192,6 +232,7 @@ export function createStudio({ store, config, catalog, required, mutation, readJ
           insist(a.owner,403,'Only the owner can test the bot connection.');
           const s=studioSettings(store); insist(s.guildId,400,'Set a Discord guild ID first.');
           const bot=await discordRequest(config,'/users/@me',fetcher), guild=await discordRequest(config,`/guilds/${s.guildId}`,fetcher);
+          a.check();
           insist(bot?.bot && guild?.id === s.guildId,503,'The bot is not installed in this guild.');
           audit(store,a.user.id,'discord.test',s.guildId);
           json(res,200,{ bot:{ id:bot.id,username:bot.username },guild:{ id:guild.id,name:guild.name } }); return true;
@@ -204,6 +245,7 @@ export function createStudio({ store, config, catalog, required, mutation, readJ
           insist(IMPLEMENTED_TOOLS.includes(body.toolId) && ['disabled','owner','members'].includes(body.mode),400,'Invalid tool mode.');
           insist(a.owner || body.mode !== 'members',403,'Only the owner can release generation to members.');
           store.transaction(() => {
+            a.check();
             const s=studioSettings(store); insist(s.version === body.version,409,'Tool settings changed.');
             delete s.version; s.tools[body.toolId]=body.mode;
             store.db.prepare('UPDATE studio_settings SET value=?,version=version+1 WHERE id=1').run(JSON.stringify(s)); audit(store,a.user.id,'tool.mode',body.toolId,body.mode);
@@ -223,10 +265,11 @@ export function createStudio({ store, config, catalog, required, mutation, readJ
           integer(body.dailyLimit,0,100,'daily build limit'); integer(body.dailyBudgetMicros,0,100000000,'daily budget'); integer(body.version,0,1000000000,'account revision');
           insist(typeof body.revokeSessions === 'boolean',400,'Invalid session action.'); const reason=string(body.reason,300,'audit reason');
           store.transaction(() => {
+            a.check();
             insist(control(store,target.id).version === body.version,409,'Account controls changed. Reload before saving.');
             store.db.prepare('INSERT INTO studio_controls VALUES(?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET status=excluded.status,daily_limit=excluded.daily_limit,daily_budget=excluded.daily_budget,version=excluded.version').run(target.id,body.status,body.dailyLimit,body.dailyBudgetMicros,body.version+1);
             if (body.revokeSessions || body.status === 'suspended') store.db.prepare('DELETE FROM sessions WHERE user_id=?').run(target.id);
-            if (body.status === 'suspended') store.db.prepare("UPDATE studio_jobs SET status='cancelled',cost=CASE WHEN status='running' THEN reserve ELSE 0 END,lease=NULL,updated_at=? WHERE user_id=? AND status IN ('queued','running')").run(new Date().toISOString(),target.id);
+            if (body.status === 'suspended') store.db.prepare("UPDATE studio_jobs SET status='cancelled',cost=CASE WHEN status='running' THEN reserve ELSE 0 END,lease=NULL,preview=NULL,updated_at=? WHERE user_id=? AND status IN ('queued','running')").run(new Date().toISOString(),target.id);
             audit(store,a.user.id,'user.update',target.id,reason);
           }); json(res,200,{ ok:true }); return true;
         }
@@ -239,6 +282,7 @@ export function createStudio({ store, config, catalog, required, mutation, readJ
           const body=await readJson(req); fields(body,['archived','reason','version']); insist(typeof body.archived === 'boolean',400,'Invalid archive state.');
           const reason=string(body.reason,300,'audit reason'); integer(body.version,1,1000000000,'project revision');
           store.transaction(() => {
+            a.check();
             const row=store.db.prepare('SELECT * FROM studio_projects WHERE id=?').get(adminProject[1]);
             insist(row,404,'Project not found.');
             insist(a.owner || !isOwner(store.user(row.user_id)),403,'Only the owner can moderate owner projects.');
@@ -264,7 +308,7 @@ export function createStudio({ store, config, catalog, required, mutation, readJ
         if (body.briefId) {
           const brief=store.list(a.user.id).find(brief => brief.id === body.briefId); insist(brief,404,'Brief not found.'); data=brief;
         }
-        const created=store.transaction(() => newProject(store,a.user.id,data,catalog));
+        const created=store.transaction(() => { a.check(); return newProject(store,a.user.id,data,catalog); });
         json(res,201,{ project:created }); return true;
       }
       const pm=/^\/api\/projects\/([a-f0-9-]{36})(?:\/(files|revisions|restore|export|jobs))?$/.exec(path);
@@ -281,7 +325,7 @@ export function createStudio({ store, config, catalog, required, mutation, readJ
           res.writeHead(200,{ 'content-type':'application/zip','content-disposition':`attachment; filename="${row.name.replace(/[^A-Za-z0-9_-]/g,'_')}-v${data.revision}.zip"` }); res.end(zipFiles(data.files)); return true;
         }
         if (method === 'GET' && action === 'jobs') {
-          json(res,200,{ jobs:store.db.prepare('SELECT * FROM studio_jobs WHERE project_id=? ORDER BY created_at DESC LIMIT 20').all(row.id).map(item => jobView(item,false)) }); return true;
+          json(res,200,{ jobs:store.db.prepare('SELECT * FROM studio_jobs WHERE project_id=? ORDER BY created_at DESC LIMIT 20').all(row.id).map(item => jobView(item,false)),projectVersion:row.version,projectUpdatedAt:row.updated_at }); return true;
         }
         const body=await readJson(req,1048576);
         if (method === 'PATCH' && !action) {
@@ -289,6 +333,7 @@ export function createStudio({ store, config, catalog, required, mutation, readJ
           const name=string(body.name,80,'name'), requirements=string(body.requirements,12000,'requirements');
           insist(typeof body.favorite === 'boolean' && typeof body.archived === 'boolean',400,'Invalid project state.');
           const saved=store.transaction(() => {
+            a.check();
             saveRevision(store,row,snapshot(store,row).files,'Project details updated',a.user.id,body.version);
             store.db.prepare('UPDATE studio_projects SET name=?,requirements=?,favorite=?,archived=? WHERE id=?').run(name,requirements,Number(body.favorite),Number(body.archived),row.id);
             return snapshot(store,project(store,a.user.id,row.id));
@@ -302,12 +347,12 @@ export function createStudio({ store, config, catalog, required, mutation, readJ
           if (body.remove) { insist(index >= 0,404,'File not found.'); files.splice(index,1); }
           else if (body.renameTo) { filePath(body.renameTo); insist(index >= 0,404,'File not found.'); files[index].path=body.renameTo; }
           else { const file={path:body.path,content:body.content}; if (index >= 0) files[index]=file; else files.push(file); }
-          const saved=store.transaction(() => saveRevision(store,row,files,body.remove ? `Delete ${body.path}` : body.renameTo ? `Rename ${body.path}` : `Save ${body.path}`,a.user.id,body.version));
+          const saved=store.transaction(() => { a.check(); return saveRevision(store,row,files,body.remove ? `Delete ${body.path}` : body.renameTo ? `Rename ${body.path}` : `Save ${body.path}`,a.user.id,body.version); });
           json(res,200,{ project:saved }); return true;
         }
         if (method === 'POST' && action === 'restore') {
           fields(body,['version','revision']); integer(body.version,1,1000000000,'project revision'); const old=snapshot(store,row,integer(body.revision,1,1000000000,'revision'));
-          const saved=store.transaction(() => saveRevision(store,row,old.files,`Restore revision ${body.revision}`,a.user.id,body.version));
+          const saved=store.transaction(() => { a.check(); return saveRevision(store,row,old.files,`Restore revision ${body.revision}`,a.user.id,body.version); });
           json(res,200,{ project:saved }); return true;
         }
         if (method === 'POST' && action === 'jobs') {
@@ -321,6 +366,10 @@ export function createStudio({ store, config, catalog, required, mutation, readJ
           insist(workerReady(),503,'No healthy isolated worker is connected.');
           const id=randomBytes(16).toString('hex'), now=new Date().toISOString();
           store.transaction(() => {
+            a.check();
+            const current=project(store,a.user.id,row.id);
+            insist(!current.archived && current.version === body.version,409,'Project changed. Reload before generating.');
+            insist(allowed(current.tool_id,a.user),403,'This generator is not enabled for your account.');
             const s=models.select(body);
             insist(workerReady(s.provider || 'openai'),503,'The connected worker has no configured credential for the selected provider. Choose a supported model or configure that provider privately on the worker.');
             const limits=control(store,a.user.id), day=now.slice(0,10);
@@ -345,13 +394,16 @@ export function createStudio({ store, config, catalog, required, mutation, readJ
         const body=await readJson(req); fields(body,jm[2] === 'apply' ? ['version'] : []);
         if (method === 'POST' && jm[2] === 'cancel') {
           store.transaction(() => {
-            insist(store.db.prepare("UPDATE studio_jobs SET status='cancelled',cost=CASE WHEN status='running' THEN reserve ELSE 0 END,lease=NULL,updated_at=? WHERE id=? AND status IN ('queued','running')").run(new Date().toISOString(),job.id).changes,409,'This build is no longer running.');
-            models.settle(job.id,job.status === 'queued' ? 'released' : 'pending');
+            a.check();
+            const current=store.db.prepare('SELECT status FROM studio_jobs WHERE id=? AND user_id=?').get(job.id,a.user.id);
+            insist(store.db.prepare("UPDATE studio_jobs SET status='cancelled',cost=CASE WHEN status='running' THEN reserve ELSE 0 END,lease=NULL,preview=NULL,updated_at=? WHERE id=? AND status IN ('queued','running')").run(new Date().toISOString(),job.id).changes,409,'This build is no longer running.');
+            models.settle(job.id,current.status === 'queued' ? 'released' : 'pending');
             event(store,job.id,'cancelled','Cancellation requested. Any provider work already accepted may still be billed.',true);
           }); json(res,200,{ ok:true }); return true;
         }
         if (method === 'POST' && jm[2] === 'apply') {
           const saved=store.transaction(() => {
+            a.check();
             const current=store.db.prepare('SELECT * FROM studio_jobs WHERE id=? AND user_id=?').get(job.id,a.user.id);
             if (current.status === 'applied' && current.applied_version) {
               const row=project(store,a.user.id,current.project_id);
@@ -360,7 +412,7 @@ export function createStudio({ store, config, catalog, required, mutation, readJ
             insist(current.status === 'review',409,'Only reviewed build results can be applied.');
             const row=project(store,a.user.id,current.project_id); insist(!row.archived && row.version === current.base_version && body.version === row.version,409,'Project changed after this build started. Export the result or start a new build; nothing was overwritten.');
             const result=JSON.parse(current.result), updated=saveRevision(store,row,result.files,result.summary,a.user.id,body.version);
-            store.db.prepare("UPDATE studio_jobs SET status='applied',applied_version=?,application_error=NULL,updated_at=? WHERE id=?").run(updated.version,new Date().toISOString(),job.id); return updated;
+            store.db.prepare("UPDATE studio_jobs SET status='applied',applied_version=?,application_error=NULL,preview=NULL,updated_at=? WHERE id=?").run(updated.version,new Date().toISOString(),job.id); return updated;
           }); json(res,200,{ project:saved }); return true;
         }
       }

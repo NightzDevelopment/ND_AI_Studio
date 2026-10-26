@@ -12,6 +12,7 @@ Studio now includes private source projects, an owner control room, Discord role
 - Account search, suspension, session revocation, per-account daily build and spending limits, audit history and tool access switches.
 - Private project creation, brief-to-project setup, search, sorting, favorites and archival.
 - Custom file explorer, tabbed source editor, syntax highlighting, unsaved-change protection, keyboard shortcuts and revision conflicts.
+- Read-only live AI code previews and automatic saved-source updates between tabs, preserving local drafts and editor position. OpenAI streams source; DeepSeek candidates appear after its complete response. See [live coding behavior](docs/LIVE_CODING.md).
 - Create, edit, rename and delete source files; inspect historical versions, restore safely and export real ZIP files.
 - Desktop split-pane workspace and mobile Files/Editor/Build panels, using original HTML, modular JavaScript and custom CSS.
 
@@ -58,6 +59,8 @@ npm start
 The generation worker uses `npm run start:worker` with its private environment and pinned rootless validator. Follow the worker instructions before starting it; the website and worker releases must both be upgraded for automatic completion recovery.
 
 Tests cover existing accounts, deployment readiness, ownership, CSRF, revisions, unsafe source paths, permission boundaries, spending reservations, worker leases, cancellation, provider response validation and container invocation constraints. Provider/Docker fixtures are not proof of live provider success or container enforcement. Complete a live acceptance test before making generation available to members.
+
+For account, workspace, model-control and real local API browser checks, use the [isolated browser test setup](docs/BROWSER_TESTS.md). The latest [launch reliability verification](docs/LAUNCH_QA.md) records the implemented fixes, local results, mocked integrations and remaining release requirements.
 
 ## Existing account behavior
 

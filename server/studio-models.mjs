@@ -143,6 +143,7 @@ export function createModels({store,actor,readJson,json,workerReady=()=>true}) {
       insist(!models.some(model=>model.enabled) || body.defaultModelId!=='',400,'Choose a default model.');
       const data={configured:true,models,defaultModelId:body.defaultModelId,creditsEnabled:body.creditsEnabled};
       store.transaction(()=>{
+        a.check();
         insist(store.db.prepare('UPDATE studio_model_settings SET value=?,version=version+1 WHERE id=1 AND version=?').run(JSON.stringify(data),body.version).changes,409,'Model settings changed. Reload before saving.');
         audit(store,a.user.id,'models.update','catalog');
       }); json(res,200,configuration()); return true;
@@ -156,6 +157,7 @@ export function createModels({store,actor,readJson,json,workerReady=()=>true}) {
       insist(typeof body.jobId==='string' && /^[a-f0-9]{32}$/.test(body.jobId),400,'Invalid build identifier.');
       insist(['charged','released'].includes(body.action),400,'Choose charge or release.'); const reason=string(body.reason,300,'reconciliation reason');
       store.transaction(()=>{
+        a.check();
         const row=store.db.prepare('SELECT state FROM studio_job_credits WHERE job_id=?').get(body.jobId);
         insist(row && row.state==='pending',409,'This hold is no longer awaiting review.');
         settle(body.jobId,body.action,a.user.id,reason); audit(store,a.user.id,'credits.resolve',body.jobId,`${body.action}: ${reason}`);
@@ -173,6 +175,7 @@ export function createModels({store,actor,readJson,json,workerReady=()=>true}) {
         const reason=string(body.reason,300,'adjustment reason'); insist(uuid(body.requestId),400,'Invalid adjustment request identifier.');
         integer(body.version,0,1000000000,'wallet revision');
         store.transaction(()=>{
+          a.check();
           const previous=store.db.prepare('SELECT * FROM studio_credit_ledger WHERE actor=? AND request_id=?').get(a.user.id,body.requestId);
           if (previous) { insist(previous.user_id===user.id && previous.delta===amount && previous.detail===reason,409,'This adjustment identifier was already used.'); return; }
           const w=wallet(user.id); insist(w.version===body.version,409,'This wallet changed. Reload before adjusting credits.');

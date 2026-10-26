@@ -43,7 +43,7 @@ function inspectProject(root,tool,runner=cp.spawnSync) {
         try {
           const pkg=JSON.parse(text.get(filename));
           if (!pkg?.dependencies?.['discord.js']) fail('Declare discord.js in dependencies.');
-          if (Object.keys(pkg?.scripts || {}).some(key=>['preinstall','install','postinstall','prepare'].includes(key))) fail('Package installation lifecycle scripts are not allowed.');
+          if (Object.keys(pkg?.scripts || {}).some(key=>['preinstall','install','postinstall','prepublish','preprepare','prepare','postprepare','predependencies','dependencies','postdependencies'].includes(key))) fail('Package installation lifecycle scripts are not allowed.');
           const entry=pkg?.main || 'index.js';
           if (typeof entry!=='string' || !/^[A-Za-z0-9_./-]+$/.test(entry) || entry.split('/').includes('..') || entry.startsWith('/') || !text.has(path.join(root,entry))) fail('Declare an existing project entry file in package.json main.');
         } catch { fail('Could not validate the bot package manifest.'); }

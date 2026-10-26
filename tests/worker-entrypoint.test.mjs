@@ -18,7 +18,7 @@ function fixture(t) {
   const release = join(directory, 'releases', 'release #1');
   mkdirSync(join(release, 'worker'), { recursive: true, mode: 0o700 });
   mkdirSync(join(release, 'server'), { mode: 0o700 });
-  for (const name of ['worker/start.mjs', 'worker/provider.mjs', 'worker/validate.mjs', 'server/studio-domain.mjs']) {
+  for (const name of ['worker/start.mjs', 'worker/provider.mjs', 'worker/validate.mjs', 'worker/code-preview.mjs', 'server/studio-domain.mjs']) {
     copyFileSync(new URL(name, root), join(release, name));
   }
   const current = join(directory, 'current');
@@ -127,3 +127,32 @@ for (const launch of ['direct', 'current', 'deepseek']) {
     assert.equal(readFileSync(dockerLog, 'utf8'), 'info\nimage\ninfo\nimage\n');
   });
 }
+
+test('a cancelled lease does not mark the worker unavailable or delay claiming the next job',t=>{
+  const f=fixture(t),bin=join(f.directory,'bin');mkdirSync(bin);
+  writeFileSync(join(bin,'docker'),`#!${process.execPath}\nconst args=process.argv.slice(2);if(args[0]==='info')console.log(JSON.stringify({SecurityOptions:['name=rootless'],CgroupVersion:'2',CgroupDriver:'systemd'}));else if(args[0]==='image')console.log(${JSON.stringify(image)});else process.exit(72);\n`,{mode:0o700});
+  const apiLog=join(f.directory,'cancel-api.log'),preload=join(f.directory,'cancel-api.mjs');
+  writeFileSync(preload,`import {appendFileSync} from 'node:fs';
+    let claims=0;
+    globalThis.fetch=async(address,options)=>{
+      const url=new URL(address);
+      if(url.origin!=='https://studio.invalid')throw new Error('Unexpected provider request');
+      if(url.pathname==='/api/worker/heartbeat')return new Response('{}');
+      if(url.pathname==='/api/worker/claim'){
+        claims++;appendFileSync(process.env.TEST_API_LOG,'claim\\n');
+        if(claims===1){
+          setTimeout(()=>process.kill(process.pid,'SIGTERM'),1500).unref();
+          return new Response(JSON.stringify({job:{id:'cancelled-job',lease:'cancelled-lease',settings:{maxBudgetMicros:1000000},project:{tool_id:'ai-script-generator'}}}));
+        }
+        setTimeout(()=>process.kill(process.pid,'SIGTERM'),10);
+        return new Response(JSON.stringify({job:null}));
+      }
+      if(url.pathname==='/api/worker/progress'||url.pathname==='/api/worker/complete')return new Response('{}',{status:409});
+      throw new Error('Unexpected fixture request');
+    };
+  `);
+  const env={...f.env,PATH:bin+':'+f.env.PATH,STUDIO_WORKER_TOKEN:'a'.repeat(64),OPENAI_API_KEY:'fixture-private-provider-key',VALIDATOR_IMAGE:image,TEST_API_LOG:apiLog};
+  const result=f.run(['--import',pathToFileURL(preload).href,join(f.current,'worker/start.mjs')],{env});
+  assert.equal(result.error,undefined);assert.equal(result.status,0);assert.equal(result.stderr,'');
+  assert.equal(readFileSync(apiLog,'utf8'),'claim\nclaim\n');
+});

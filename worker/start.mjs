@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { realpathSync } from 'node:fs';
 import { generate, providerPayload, reserveFor, providerLabel, configuredProviders } from './provider.mjs';
 import { validate, validatorReady, validateEnvironment } from './validate.mjs';
+import { createPreviewPublisher } from './code-preview.mjs';
 
 async function deliverCompletion(api,body,wait) {
   // This receipt is safe to replay. Provider requests and generation are never retried here.
@@ -22,6 +23,7 @@ export async function runJob(job,{ key,image,api,generator=generate,validator=va
   const abort=()=>controller.abort(); signal?.addEventListener('abort',abort,{once:true});
   if (signal?.aborted) controller.abort();
   const auth={ id:job.id,lease:job.lease }; let cost=0, uncertain=false, heartbeatBusy=false, completion;
+  const preview=createPreviewPublisher({api,auth,signal:controller.signal,onRevoked:()=>controller.abort()});
   const progress=async(stage,message)=>api('/api/worker/progress',{...auth,...(stage ? {stage,message} : {})});
   const timer=setInterval(async()=>{
     if (heartbeatBusy) return; heartbeatBusy=true;
@@ -30,22 +32,26 @@ export async function runJob(job,{ key,image,api,generator=generate,validator=va
   try {
     controller.signal.throwIfAborted();
     await progress('checking','Checking validator readiness before any paid provider request.');
+    controller.signal.throwIfAborted();
     await preflight(job.project.tool_id,{image,signal:controller.signal});
     let files=job.project.files,summary='',checks=[];
     for (let attempt=0;attempt<job.settings.maxCalls;attempt++) {
       controller.signal.throwIfAborted();
       await progress(attempt ? 'repairing' : 'generating',attempt ? 'Repairing reported syntax or packaging errors within the remaining budget.' : `Sending the approved project snapshot to ${providerLabel(job.settings)} model ${job.settings.model}.`);
+      controller.signal.throwIfAborted();
       if (reserveFor(providerPayload(job,files,checks),job.settings)+cost > job.settings.maxBudgetMicros) {
         completion={...auth,costMicros:cost,result:{error:'The conservative cost estimate exceeds the remaining build budget. No further provider request was sent.'}}; break;
       }
+      preview.offer(attempt+1,[]);
       uncertain=true;
-      const generated=await generator(job,files,{key,signal:controller.signal,spent:cost,diagnostics:checks});
+      const generated=await generator(job,files,{key,signal:controller.signal,spent:cost,diagnostics:checks,onPreview:changes=>preview.offer(attempt+1,changes)});
       uncertain=false; cost+=generated.cost; files=generated.files; summary=generated.summary;
       controller.signal.throwIfAborted();
       await progress('checking','Checking project structure and syntax in an offline, resource-limited container.');
+      controller.signal.throwIfAborted();
       const result=await validator(files,job.project.tool_id,{image,signal:controller.signal}); checks=result.checks;
       controller.signal.throwIfAborted();
-      if (result.kind === 'infrastructure') {
+      if (result.kind === 'infrastructure' || (!result.ok && result.kind!=='source')) {
         const failure=new Error('Validator infrastructure failed. No AI repair was requested.'); failure.status=503; throw failure;
       }
       if (result.ok) {
@@ -63,7 +69,7 @@ export async function runJob(job,{ key,image,api,generator=generate,validator=va
     const reported=uncertain ? Math.max(cost,job.settings.maxBudgetMicros) : cost;
     const message=controller.signal.aborted ? 'Worker interrupted or build access revoked. Provider work already accepted may still be billed.' : (error?.status ? error.message : 'Build failed. No automatic retry was attempted; inspect the worker configuration and provider billing.');
     completion={...auth,costMicros:reported,result:{error:message.slice(0,1000)}};
-  } finally { clearInterval(timer); signal?.removeEventListener('abort',abort); }
+  } finally { preview.stop();clearInterval(timer); signal?.removeEventListener('abort',abort); }
   // Terminal progress rejects a completed lease. Stop heartbeats before delivery and keep
   // delivery failures outside the generation catch so a saved result cannot become an error.
   return deliverCompletion(api,completion,wait);
@@ -76,8 +82,9 @@ export async function main(env=process.env) {
   const keys={openai:env.OPENAI_API_KEY,deepseek:env.DEEPSEEK_API_KEY};
   await validatorReady(env.VALIDATOR_IMAGE);
   const stop=new AbortController(); for (const name of ['SIGINT','SIGTERM']) process.once(name,()=>stop.abort());
-  const api=async(path,body)=>{
-    const response=await fetch(`${origin.origin}${path}`,{method:'POST',redirect:'error',signal:AbortSignal.timeout(15000),headers:{authorization:`Bearer ${env.STUDIO_WORKER_TOKEN}`,'content-type':'application/json'},body:JSON.stringify(body)});
+  const api=async(path,body,{signal:requestSignal,timeout=15000}={})=>{
+    const timeoutSignal=AbortSignal.timeout(timeout),signal=requestSignal?AbortSignal.any([requestSignal,timeoutSignal]):timeoutSignal;
+    const response=await fetch(`${origin.origin}${path}`,{method:'POST',redirect:'error',signal,headers:{authorization:`Bearer ${env.STUDIO_WORKER_TOKEN}`,'content-type':'application/json'},body:JSON.stringify(body)});
     if (!response.ok) { const error=new Error(`Worker API status ${response.status}.`); error.status=response.status; throw error; }
     const raw=await response.text(); if (raw.length>2097152) throw new Error('Worker response is too large.'); return JSON.parse(raw);
   };
@@ -92,7 +99,11 @@ export async function main(env=process.env) {
         if (job) {
           const provider=job.settings.provider ?? 'openai';
           if (!providers.includes(provider)) throw new Error('The claimed provider is not configured on this worker.');
-          await runJob(job,{key:keys[provider],image:env.VALIDATOR_IMAGE,api,signal:stop.signal});
+          try { await runJob(job,{key:keys[provider],image:env.VALIDATOR_IMAGE,api,signal:stop.signal}); }
+          catch (error) {
+            // Cancellation, revocation and expired leases end this job, not worker readiness.
+            if (error?.status!==409) throw error;
+          }
         }
         else await delay(3000,undefined,{signal:stop.signal});
       } catch {
