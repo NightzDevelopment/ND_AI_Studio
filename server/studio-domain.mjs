@@ -45,6 +45,23 @@ export function validateFiles(files) {
   for (const path of seen) for (const other of seen) insist(!other.startsWith(`${path}/`), 400, 'A file cannot also be a directory.');
   return result;
 }
+export function validatePreviewChanges(changes) {
+  insist(Array.isArray(changes) && changes.length <= MAX_FILES,400,`A preview supports at most ${MAX_FILES} changed files.`);
+  const byPath = new Map();
+  const files = changes.map(change => {
+    fields(change,['path','content','complete']);
+    insist(typeof change.complete === 'boolean',400,'Preview file completion must be explicit.');
+    insist(change.content !== null || change.complete,400,'A preview deletion must be complete.');
+    byPath.set(change.path,change);
+    return { path:change.path, content:change.content === null ? '' : change.content };
+  });
+  // Previews are untrusted source text. Reuse the saved-source bounds and path
+  // rules without promoting partial content to a project revision.
+  return validateFiles(files).map(file => {
+    const change = byPath.get(file.path);
+    return { path:file.path, content:change.content, complete:change.complete };
+  });
+}
 export function changedFiles(base, changes) {
   insist(Array.isArray(changes) && changes.length <= MAX_FILES, 400, 'Invalid generated file changes.');
   const map = new Map(validateFiles(base).map(file => [file.path, file.content]));
@@ -100,6 +117,7 @@ export function migrateStudio(store) {
       ['application_mode', "TEXT NOT NULL DEFAULT 'review' CHECK(application_mode IN ('automatic','review'))"],
       ['applied_version', 'INTEGER'], ['application_error', 'TEXT'],
       ['completion_lease', 'TEXT'], ['completion_hash', 'TEXT'],
+      ['preview', 'TEXT'], ['preview_sequence', 'INTEGER NOT NULL DEFAULT 0 CHECK(preview_sequence>=0)'],
     ]) if (!columns.has(name)) store.db.exec(`ALTER TABLE studio_jobs ADD COLUMN ${name} ${definition}`);
     store.db.prepare("UPDATE studio_jobs SET applied_version=base_version+1 WHERE status='applied' AND applied_version IS NULL").run();
   });
