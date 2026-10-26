@@ -2,7 +2,9 @@
 
 ## Current deliverable
 
-Release 0.1 includes the original responsive frontend, a searchable 24-tool catalog, browser-local project briefs, build/preview tooling, tests and deployment configuration. The initial concept image and product, design and architecture specifications are included. No AI engine, server-side account system or asset pipeline is connected. Browser end-to-end verification and VPS deployment remain outstanding.
+Release 0.3 includes Discord accounts and private briefs, source projects and revision history, ZIP exports, owner/staff controls, and a configured worker path for the two coding generators. The overview highlights those two coding workflows; the searchable tool library retains all 24 definitions and labels the remaining 22 engines as planned. See the [README](../README.md) for current runtime configuration and deployment boundaries.
+
+Local Chromium checks cover the account and source workflows against deterministic fixtures and the real local API/SQLite with mocked external integrations. These checks do not establish live provider access, rootless Docker enforcement or FiveM/Discord runtime correctness. Asset processing, customer payments, public sharing and the other catalog engines remain future work. The stages below describe the broader intended scope; they are not claims that every item is available.
 
 ## Stage 1: usable platform foundation
 

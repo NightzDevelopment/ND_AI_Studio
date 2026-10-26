@@ -22,11 +22,34 @@ jobs:
           node-version: '22'
       - run: npm test
       - run: npm run build
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install isolated browser test tools
+        run: |
+          python -m venv "$RUNNER_TEMP/nd-ai-studio-browser"
+          "$RUNNER_TEMP/nd-ai-studio-browser/bin/python" -m pip install -r tests/browser-requirements.txt
+          "$RUNNER_TEMP/nd-ai-studio-browser/bin/python" -m playwright install --with-deps chromium
+      - name: Exercise accounts, workspace and local API journeys
+        env:
+          ND_QA_ARTIFACTS: ${{ runner.temp }}/studio-browser-evidence
+        run: |
+          "$RUNNER_TEMP/nd-ai-studio-browser/bin/python" tests/account-browser.py
+          "$RUNNER_TEMP/nd-ai-studio-browser/bin/python" tests/workspace-browser.py
+          "$RUNNER_TEMP/nd-ai-studio-browser/bin/python" tests/models-browser.py
+          "$RUNNER_TEMP/nd-ai-studio-browser/bin/python" tests/launch-browser.py
       - name: Check shell scripts
         run: find deploy -name '*.sh' -print0 | xargs -0 -r -n1 bash -n
       - name: Package tracked source only
         if: always()
         run: git archive --format=tar.gz --output=studio-source.tar.gz HEAD
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: studio-browser-evidence
+          path: ${{ runner.temp }}/studio-browser-evidence
+          retention-days: 3
+          if-no-files-found: ignore
       - uses: actions/upload-artifact@v4
         if: always()
         with:

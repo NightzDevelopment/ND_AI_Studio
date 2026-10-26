@@ -36,3 +36,21 @@ apt-get install -y python3-venv
 Chromium also requires Linux shared libraries. Playwright's browser download does not install those system packages. If startup reports missing libraries, use the [official Linux browser dependency instructions](https://playwright.dev/python/docs/browsers#install-system-dependencies) with that machine's administrator. Do not add sudo/root privileges to the production worker account for browser tests; run the fixture tests on a development machine instead when the required libraries are unavailable there.
 
 Both the Python package and a browser must be available before these checks can run. A missing prerequisite exits unsuccessfully; it is not reported as a passed or skipped test run. Browser fixture success is distinct from a real owner build through the configured provider and rootless validator.
+
+## Browser suites
+
+Build the frontend once, then run all four suites with the same virtual environment:
+
+```bash
+npm run build
+"$HOME/.venvs/nd-ai-studio-browser/bin/python" tests/account-browser.py
+"$HOME/.venvs/nd-ai-studio-browser/bin/python" tests/workspace-browser.py
+"$HOME/.venvs/nd-ai-studio-browser/bin/python" tests/models-browser.py
+"$HOME/.venvs/nd-ai-studio-browser/bin/python" tests/launch-browser.py
+```
+
+The account and workspace suites use deterministic HTTP fixtures to reproduce delayed responses, repeated clicks, expired sessions, conflicts and recovery. The model suite exercises the real model/credit controls with deferred API fixtures, including captured quotes, account changes and delayed catalog/wallet responses. `launch-browser.py` starts the supported static preview with the real account/Studio API and an isolated temporary SQLite database for each journey. It exercises the normal OAuth callback and session cookies with synthetic Discord identities, real project revisions, ZIP downloads, owner permissions, credit settlement and responsive navigation. External Discord identity/avatar images, AI generation and rootless validation are explicit test doubles. No live credentials, provider spending, customer data or production services are used.
+
+The launch suite writes screenshots, request/status evidence and server logs under `/tmp/nd-studio-launch-artifacts` by default. Set `ND_QA_ARTIFACTS` to choose another private local directory. Temporary databases and local services are cleaned up after each journey. The assertions reject unexpected browser exceptions, failed requests and HTTP errors; verified download handoffs and the deliberate permission/expiry/error cases are recorded separately. Do not rebuild shared `dist` assets while a browser suite is running.
+
+The Verify Studio workflow runs these suites after Node tests and the production asset build, and retains launch-browser evidence for three days. A local pass does not establish that GitHub CI ran, that production was deployed, or that live integrations work.

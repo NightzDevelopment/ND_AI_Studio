@@ -59,6 +59,8 @@ The generation worker uses `npm run start:worker` with its private environment a
 
 Tests cover existing accounts, deployment readiness, ownership, CSRF, revisions, unsafe source paths, permission boundaries, spending reservations, worker leases, cancellation, provider response validation and container invocation constraints. Provider/Docker fixtures are not proof of live provider success or container enforcement. Complete a live acceptance test before making generation available to members.
 
+For account, workspace, model-control and real local API browser checks, use the [isolated browser test setup](docs/BROWSER_TESTS.md). The latest [launch reliability verification](docs/LAUNCH_QA.md) records the implemented fixes, local results, mocked integrations and remaining release requirements.
+
 ## Existing account behavior
 
 Discord OAuth requests only `identify`, uses browser-bound single-use state and PKCE, and stores hashed server session tokens. Discord access/refresh tokens are not stored. Profiles include an editable display name, bio, default framework and layout density. Account briefs support search, sorting, editing, export and optional idempotent import of local drafts.
