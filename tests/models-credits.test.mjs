@@ -161,36 +161,41 @@ test('queued cancellation releases credits without a debit',async t=>{
   assert.equal((await f.request(`/api/jobs/${r.data.job.id}/cancel`,'POST',{},f.member)).status,200);
   assert.deepEqual(await f.wallet(),{balance:50,version:1,reserved:0,pending:0,available:50});
 });
-test('running cancellation holds credits for explicit owner review, not automatic charging',async t=>{
+test('running cancellation restores the full allowance even with possible provider spending',async t=>{
   const f=fixture(t);await f.catalog();await f.grant();const p=await f.create();await f.queue(p);const job=(await f.worker('claim',{})).data.job;
-  await f.request(`/api/jobs/${job.id}/cancel`,'POST',{},f.member);let w=await f.wallet();assert.equal(w.pending,5);assert.equal(w.balance,50);assert.equal(w.available,45);
-  assert.equal((await f.request('/api/admin/credits/resolve','POST',{jobId:job.id,action:'released',reason:'No completed proposal'})).status,200);
-  w=await f.wallet();assert.equal(w.pending,0);assert.equal(w.balance,50);
-  assert.equal((await f.request('/api/admin/credits/resolve','POST',{jobId:job.id,action:'charged',reason:'Duplicate'})).status,409);
+  await f.request(`/api/jobs/${job.id}/cancel`,'POST',{},f.member);const w=await f.wallet();assert.equal(w.pending,0);assert.equal(w.balance,50);assert.equal(w.available,50);
+  assert.equal((await f.request('/api/admin/credits/resolve','POST',{jobId:job.id,action:'charged',reason:'No delivered output'})).status,409);
 });
-test('known zero-usage failure releases hold; billed failure requires review',async t=>{
+test('both zero-usage and billed failures release the full reservation',async t=>{
   const f=fixture(t);await f.catalog();await f.grant();const p=await f.create();await f.queue(p);let job=(await f.worker('claim',{})).data.job;
   await f.complete(job,{error:'Validator preflight unavailable.'},0);assert.equal((await f.wallet()).available,50);
   await f.queue(p);job=(await f.worker('claim',{})).data.job;await f.complete(job,{error:'Source validation failed.'},100);
-  assert.equal((await f.wallet()).pending,5);assert.equal((await f.wallet()).balance,50);
-  await f.request('/api/admin/credits/resolve','POST',{jobId:job.id,action:'charged',reason:'Owner test settlement'});
-  assert.equal((await f.wallet()).balance,45);assert.equal((await f.wallet()).pending,0);
+  assert.equal((await f.wallet()).pending,0);assert.equal((await f.wallet()).balance,50);assert.equal((await f.wallet()).available,50);
+  assert.equal((await f.request('/api/admin/credits/resolve','POST',{jobId:job.id,action:'charged',reason:'Cannot charge failed output'})).status,409);
 });
-test('expired leases retain a pending hold and are never automatically replayed',async t=>{
+test('expired leases restore customer credits and are never automatically replayed',async t=>{
   const f=fixture(t);await f.catalog();await f.grant();const p=await f.create();await f.queue(p);const job=(await f.worker('claim',{})).data.job;
   f.store.db.prepare('UPDATE studio_jobs SET lease_until=0 WHERE id=?').run(job.id);
-  const w=await f.wallet();assert.equal(w.pending,5);assert.equal(w.available,45);
+  const w=await f.wallet();assert.equal(w.pending,0);assert.equal(w.available,50);
   assert.equal((await f.worker('claim',{})).data.job,null);assert.equal((await f.complete(job)).status,409);
+});
+test('historical review-policy jobs retain their original reconciliation rules',async t=>{
+  const f=fixture(t);await f.catalog();await f.grant();const p=await f.create();const queued=(await f.queue(p)).response.data.job;
+  f.store.db.prepare("UPDATE studio_jobs SET settings=json_set(settings,'$.creditSettlement','proposal-success-otherwise-review') WHERE id=?").run(queued.id);
+  const job=(await f.worker('claim',{})).data.job;await f.complete(job,{error:'Historical provider failure'},100);
+  assert.equal((await f.wallet()).pending,5);
+  assert.equal((await f.request('/api/admin/credits/resolve','POST',{jobId:job.id,action:'released',reason:'Historical reconciliation'})).status,200);
+  assert.equal((await f.wallet()).available,50);
 });
 test('disabling a tool before claim releases the queued credit reservation',async t=>{
   const f=fixture(t);await f.catalog();await f.grant();const p=await f.create();await f.queue(p);
   const s=studioSettings(f.store);s.tools['ai-script-generator']='disabled';delete s.version;f.store.db.prepare('UPDATE studio_settings SET value=? WHERE id=1').run(JSON.stringify(s));
   await f.worker('claim',{});assert.equal((await f.wallet()).available,50);
 });
-test('suspension cancels jobs and pending credits remain visible for reconciliation',async t=>{
+test('suspension cancels jobs and restores undelivered credit reservations',async t=>{
   const f=fixture(t);await f.catalog();await f.grant();const p=await f.create();await f.queue(p);await f.worker('claim',{});
   assert.equal((await f.request(`/api/admin/users/${f.member.id}`,'PATCH',{status:'suspended',dailyLimit:5,dailyBudgetMicros:1000000,version:0,revokeSessions:true,reason:'Test suspension'})).status,200);
-  const r=await f.request('/api/admin/credits/pending');assert.equal(r.data.items.length,1);
+  const r=await f.request('/api/admin/credits/pending');assert.equal(r.data.items.length,0);assert.equal((await f.request(`/api/admin/credits?discordId=${f.member.discord_id}`)).data.wallet.available,50);
 });
 test('adjustments are idempotent and cannot withdraw reserved or pending credits',async t=>{
   const f=fixture(t);await f.catalog();const {body,response}=await f.grant();assert.equal(response.status,200);

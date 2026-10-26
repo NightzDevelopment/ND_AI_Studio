@@ -212,20 +212,20 @@ test('validated unreconciled output preserves a newer project and remains downlo
   assert.ok((await f.request(`/api/jobs/${f.job.id}/export`,{binary:true})).includes(Buffer.from('client.lua')));
 });
 
-test('unreconciled failed results retain pending credits, while ordinary over-budget completion stays failed',async t=>{
+test('failed results restore customer credits while retaining provider accounting for reconciliation',async t=>{
   const f=await fixture(t),accounting=unreconciled('cache-write-price-unconfigured');
   const receipt={id:f.job.id,lease:f.job.lease,costMicros:f.job.settings.maxBudgetMicros,result:{error:'Source failed validation with unreconciled provider usage.',accounting}};
   const done=await f.worker('/api/worker/complete',receipt);assert.equal(done.status,'failed');
   assert.equal((await f.worker('/api/worker/complete',receipt)).status,'failed');
   const job=(await f.request(`/api/jobs/${f.job.id}`)).job;
-  assert.equal(job.credits.state,'pending');assert.deepEqual(job.result.accounting,accounting);
+  assert.equal(job.credits.state,'released');assert.deepEqual(job.result.accounting,accounting);
   assert.equal((await f.request(`/api/projects/${f.project.id}`)).project.version,1);
-  const wallet=(await f.request('/api/studio/credits')).wallet;assert.equal(wallet.balance,25);assert.equal(wallet.pending,5);assert.equal(wallet.reserved,0);
-  assert.equal(f.store.db.prepare("SELECT count(*) n FROM studio_credit_ledger WHERE kind='pending'").get().n,1);
+  const wallet=(await f.request('/api/studio/credits')).wallet;assert.equal(wallet.balance,25);assert.equal(wallet.pending,0);assert.equal(wallet.reserved,0);
+  assert.equal(f.store.db.prepare("SELECT count(*) n FROM studio_credit_ledger WHERE kind='pending'").get().n,0);
   const over=await fixture(t),cost=over.job.settings.maxBudgetMicros+1;
   assert.equal((await over.worker('/api/worker/complete',{id:over.job.id,lease:over.job.lease,costMicros:cost,result:{files:generatedFiles,summary:'Over budget fixture',checks:[]}})).status,'failed');
   const overJob=(await over.request(`/api/jobs/${over.job.id}`)).job;
-  assert.match(overJob.result.error,/exceeded/);assert.equal('accounting' in overJob.result,false);assert.equal(overJob.credits.state,'pending');
+  assert.match(overJob.result.error,/exceeded/);assert.equal('accounting' in overJob.result,false);assert.equal(overJob.credits.state,'released');
 });
 
 test('completion receipts without accounting metadata retain the original fingerprint and replay contract',async t=>{
@@ -272,10 +272,10 @@ test('an above-budget unreconciled completion stays failed and preserves its met
   await f.restart();assert.equal((await f.worker('/api/worker/complete',receipt)).status,'failed');
   const job=(await f.request(`/api/jobs/${f.job.id}`)).job;
   assert.equal(job.costMicros,receipt.costMicros);assert.deepEqual(job.result.accounting,accounting);assert.match(job.result.error,/exceeded/);
-  assert.equal(job.result.files,undefined);assert.equal(job.credits.state,'pending');
+  assert.equal(job.result.files,undefined);assert.equal(job.credits.state,'released');
   assert.equal((await f.request(`/api/projects/${f.project.id}`)).project.version,1);
-  const wallet=(await f.request('/api/studio/credits')).wallet;assert.equal(wallet.balance,25);assert.equal(wallet.pending,5);
-  assert.equal(f.store.db.prepare("SELECT count(*) n FROM studio_credit_ledger WHERE kind='pending'").get().n,1);
+  const wallet=(await f.request('/api/studio/credits')).wallet;assert.equal(wallet.balance,25);assert.equal(wallet.pending,0);
+  assert.equal(f.store.db.prepare("SELECT count(*) n FROM studio_credit_ledger WHERE kind='pending'").get().n,0);
 });
 
 test('unpriced cache writes cannot conceal an independently known provider cost above the budget',async t=>{
@@ -305,8 +305,8 @@ test('unpriced cache writes cannot conceal an independently known provider cost 
   assert.ok(job.costMicros>=knownOutputCost);assert.ok(job.costMicros>f.job.settings.maxBudgetMicros);
   assert.deepEqual(job.result.accounting,accounting);assert.match(job.result.error,/exceeded/);assert.equal(job.result.files,undefined);
   const project=(await f.request(`/api/projects/${f.project.id}`)).project;assert.equal(project.version,1);assert.deepEqual(project.files,[]);
-  assert.equal(job.credits.state,'pending');
-  const wallet=(await f.request('/api/studio/credits')).wallet;assert.equal(wallet.balance,25);assert.equal(wallet.pending,5);assert.equal(wallet.reserved,0);
+  assert.equal(job.credits.state,'released');
+  const wallet=(await f.request('/api/studio/credits')).wallet;assert.equal(wallet.balance,25);assert.equal(wallet.pending,0);assert.equal(wallet.reserved,0);
   assert.equal(f.store.db.prepare('SELECT count(*) n FROM studio_revisions WHERE project_id=?').get(f.project.id).n,1);
-  assert.equal(f.store.db.prepare("SELECT count(*) n FROM studio_credit_ledger WHERE kind='pending'").get().n,1);
+  assert.equal(f.store.db.prepare("SELECT count(*) n FROM studio_credit_ledger WHERE kind='pending'").get().n,0);
 });

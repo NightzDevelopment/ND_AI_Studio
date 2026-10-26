@@ -10,7 +10,7 @@ export function createModelControls({api,el,button,field,selectField,table,notic
   select.name='modelId'; select.setAttribute('aria-label','Coding model'); label.append(select);
   const summary=el('p','model-quote'), balance=el('p','model-wallet'), details=button('Credit history',showHistory,'credit-history-button');
   summary.setAttribute('aria-live','polite'); balance.setAttribute('aria-live','polite');
-  panel.append(label,summary,balance,details); document.getElementById('build-form').prepend(panel);
+  const billingLink=el('a','','Plans & usage');billingLink.href='#billing';panel.append(label,summary,balance,details,billingLink); document.getElementById('build-form').prepend(panel);
   select.addEventListener('change',()=>{selected=select.value;render();onChange();});
   function syncOwner(){
     const current=getUserId();if(current===owner)return;
@@ -23,9 +23,9 @@ export function createModelControls({api,el,button,field,selectField,table,notic
     syncOwner();
     select.disabled=locked || !data?.models.length;
     const model=chosen();
-    summary.textContent=model ? `${providerName(model.provider)} / ${model.tier.toUpperCase()} / ${data.creditsEnabled?`${model.creditsPerBuild} credits per completed build`:'Studio credit deductions are off'}. API estimate cap: $${(model.maxBudgetMicros/1000000).toFixed(2)} per build.${model.workerReady===false?' This provider is not ready on the worker.':''}` : 'No model selected. Configure coding models in Control room.';
+    summary.textContent=model ? `${providerName(model.provider)} / ${model.tier.toUpperCase()} / ${data.billing?`${model.creditsPerBuild} credits maximum; delivered builds consume recorded usage`:data.creditsEnabled?`${model.creditsPerBuild} credits per completed build`:'Studio credit deductions are off'}. API estimate cap: $${(model.maxBudgetMicros/1000000).toFixed(2)} per build.${model.workerReady===false?' This provider is not ready on the worker.':''}` : 'No model selected. Configure coding models in Control room.';
     const w=data?.wallet;
-    balance.textContent=w ? `${w.available} credits available / ${w.reserved} reserved / ${w.pending} pending review` : 'Loading model settings...';
+    balance.textContent=w ? `${w.available} credits available / ${w.reserved} reserved / ${w.pending} pending review${data.billing?.paused?' / generation paused after provider failures':''}` : 'Loading model settings...';
     details.disabled=!data;
     refreshSelects(panel);
   }
@@ -46,7 +46,7 @@ export function createModelControls({api,el,button,field,selectField,table,notic
     loading=pending;
     try { await pending; } finally {if(loading===pending)loading=null;}
   }
-  function available() { const model=chosen();return Boolean(model && model.workerReady!==false && (!data.creditsEnabled || data.wallet.available>=model.creditsPerBuild)); }
+  function available() { const model=chosen();return Boolean(model && model.workerReady!==false && !data.billing?.paused && (!data.creditsEnabled || data.wallet.available>=model.creditsPerBuild)); }
   async function prepare() {
     const userId=getUserId();
     await refresh(true);
@@ -55,14 +55,14 @@ export function createModelControls({api,el,button,field,selectField,table,notic
     if(model.workerReady===false)throw new Error(`The worker is not configured for ${providerName(model.provider)}. Choose an available provider or ask the owner to configure it.`);
     if(!available())throw new Error('Not enough available Studio credits for the selected model.');
     const quote=Object.freeze({modelId:model.id,pricingVersion:data.pricingVersion,quotedCredits:data.creditsEnabled?model.creditsPerBuild:0});
-    quotes.set(quote,{model:{...model},creditsEnabled:data.creditsEnabled,userId});
+    quotes.set(quote,{model:{...model},creditsEnabled:data.creditsEnabled,metered:Boolean(data.billing),userId});
     return quote;
   }
   function confirmation(quote) {
     const snapshot=quotes.get(quote);
     if(!snapshot || snapshot.userId!==getUserId())throw new Error('The model quote belongs to an earlier account. Review the current model before generating.');
-    const {model,creditsEnabled}=snapshot;
-    return `${providerName(model.provider)} / ${model.label} (${model.id}). ${creditsEnabled?`${quote.quotedCredits} Studio credits are reserved now and charged when a validated build is delivered. Failed or interrupted builds with possible API usage await owner review.`:'No Studio credits will be deducted.'} API estimate cap: $${(model.maxBudgetMicros/1000000).toFixed(2)}. Your current project snapshot and request are sent to ${providerName(model.provider)}. Validated output saves a new project revision automatically when its source revision still matches. A conflict preserves the finished output without overwriting newer source. This never deploys or runs the generated code.`;
+    const {model,creditsEnabled,metered}=snapshot;
+    return `${providerName(model.provider)} / ${model.label} (${model.id}). ${creditsEnabled?`${quote.quotedCredits} Studio credits are reserved now. ${metered?'Only recorded provider usage, including repairs, is charged against your allowance after validated delivery. Unused reservation is released. No extra card payment is taken.':'The displayed fixed credit amount is charged after validated delivery.'} Failed or interrupted builds without delivered output release their full reservation.`:'No Studio credits will be deducted.'} API estimate cap: $${(model.maxBudgetMicros/1000000).toFixed(2)}. Your current project snapshot and request are sent to ${providerName(model.provider)}. Validated output saves a new project revision automatically when its source revision still matches. A conflict preserves the finished output without overwriting newer source. This never deploys or runs the generated code.`;
   }
   async function showHistory() {
     const userId=getUserId(),route=location.hash,sequence=++historySequence;
@@ -83,7 +83,7 @@ export function createModelControls({api,el,button,field,selectField,table,notic
     const form=el('form','model-catalog-form'), rows=el('div','model-cards');
     const charge=check('Enforce Studio credits for new builds',config.creditsEnabled);
     const defaults=selectField('Default coding model',[['','Choose a default model']],config.defaultModelId,'defaultModelId');
-    const header=el('section','admin-card');header.append(charge.label,el('p','fine muted','Off by default. Enabling requires real owner-granted balances. No checkout, purchases, exchange rate or credit expiry is configured. Validated builds consume the displayed fixed model charge; zero-usage failures release their hold. Other failed or interrupted outcomes require owner reconciliation.'),defaults.label);
+    const header=el('section','admin-card');header.append(charge.label,el('p','fine muted','Off by default. Enabling requires real owner-granted balances. These controls manage legacy internal testing credits. Enabled subscriptions use a separate monthly allowance and metered model charges. New failed or interrupted builds release their full customer reservation. Historical holds keep their captured reconciliation policy.'),defaults.label);
     form.append(header,rows);root.append(form);
     const editors=[];
     function updateDefaults(){

@@ -1,3 +1,5 @@
+import { billingConfig } from './subscriptions.mjs';
+
 export function readConfig(env = process.env) {
   const origin = new URL(env.APP_ORIGIN || 'https://ai.nightz.dev');
   const development = env.NODE_ENV === 'development';
@@ -23,7 +25,7 @@ export function readConfig(env = process.env) {
   if (workerToken && !/^[a-f0-9]{64}$/.test(workerToken)) throw new Error('STUDIO_WORKER_TOKEN must be 32 random bytes encoded as 64 hexadecimal characters.');
   const secure = origin.protocol === 'https:';
   return {
-    origin: origin.origin, clientId, clientSecret, port, secure, ownerIds, botToken, workerToken,
+    origin: origin.origin, clientId, clientSecret, port, secure, ownerIds, botToken, workerToken, billing:billingConfig(env),
     redirectUri: `${origin.origin}/auth/discord/callback`,
     database: env.DATABASE_PATH || '/var/lib/nd-ai-studio/studio.sqlite',
     sessionCookie: secure ? '__Host-ndai-session' : 'ndai-session',

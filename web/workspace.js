@@ -1,5 +1,6 @@
 import { refreshSelects, confirmAction } from './controls.js';
 import { createModelControls } from './models.js';
+import { renderBilling } from './billing.js';
 import { SourceDrafts, draftStorageKey } from './workspace-drafts.js';
 const $=id=>document.getElementById(id);
 const state={ session:null, capabilities:null, catalog:null, projects:[], project:null, selected:null, tabs:[], drafts:new SourceDrafts(), jobs:[], job:null, briefList:[], editingProject:false, fileMode:'new', managedUser:null, adminTab:null, settings:null, review:null, route:location.hash || '#projects', pollBusy:false, capabilitiesAt:0, buildSubmitting:false, draftStorageFailed:false, draftRecovery:null, sourceJobsAt:'', projectDialog:null, fileDialog:null, sourceWrites:new Set(), selectedJobId:null, draftOwnerId:null, blockedDraftKeys:new Set(), initialized:false, previewFile:null, previewJobId:null, previewSignature:'', syncUnavailable:false, lastSyncError:null };
@@ -65,7 +66,7 @@ const minimumMoney=value=>`$${(value/1000000).toFixed(6).replace(/0{1,2}$/,'')}`
 const time=value=>new Date(value).toLocaleString();
 function dirty(){return state.drafts.size>0;}
 function panel(name){$('workbench').dataset.panel=name;document.querySelectorAll('[data-panel]').forEach(node=>{if(node.tagName==='BUTTON')node.setAttribute('aria-pressed',String(node.dataset.panel===name));});}
-function show(name){if(name!=='editor-view')clearLivePreview();for(const id of ['loading','login','route-error','dashboard','editor-view','admin-view'])$(id).hidden=id!==name;}
+function show(name){if(name!=='editor-view')clearLivePreview();for(const id of ['loading','login','route-error','dashboard','editor-view','admin-view','billing-view'])$(id).hidden=id!==name;}
 function toolName(id){return state.catalog?.tools.find(tool=>tool.id===id)?.name || id;}
 function formError(form,message){const target=form.querySelector('.form-error');target.textContent=message;target.hidden=!message;}
 async function submit(form,action){
@@ -494,6 +495,8 @@ async function renderRoute(){
   if(sequence!==routeSequence)return;
   if(requested!==state.route){if(state.route==='#admin')$('admin-content').replaceChildren();closeDialogs();state.projectDialog=null;state.fileDialog=null;state.review=null;state.draftRecovery=null;}
   state.route=requested;$('error').hidden=true;$('projects-nav').removeAttribute('aria-current');$('admin-nav').removeAttribute('aria-current');
+  $('billing-nav').removeAttribute('aria-current');
+  if(requested==='#billing'){$('route-label').textContent='PLANS & USAGE';$('billing-nav').setAttribute('aria-current','page');show('billing-view');const userId=state.session.user.id;await renderBilling({root:$('billing-view'),api,el,button,confirmAction,current:()=>sequence===routeSequence&&state.session?.user?.id===userId&&state.route==='#billing'});return;}
   if(requested==='#admin'){$('route-label').textContent='CONTROL ROOM';$('admin-nav').setAttribute('aria-current','page');show('admin-view');await admin(state.adminTab);return;}
   const match=/^#project\/([a-f0-9-]{36})$/.exec(requested);
   if(match){show('loading');const result=await api(`/api/projects/${match[1]}`);if(sequence!==routeSequence)return;setProject(result.project,state.project?.id===result.project.id);state.jobs=[];state.job=null;state.selectedJobId=null;state.sourceJobsAt='';state.capabilities=await api('/api/studio/session');if(sequence!==routeSequence)return;$('route-label').textContent='PROJECT EDITOR';show('editor-view');renderEditor();await loadJobs();return;}

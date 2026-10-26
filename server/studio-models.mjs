@@ -35,7 +35,7 @@ export function validateModel(model) {
   return {...model,label};
 }
 
-export function createModels({store,actor,readJson,json,workerReady=()=>true}) {
+export function createModels({store,actor,readJson,json,workerReady=()=>true,subscriptions}) {
   store.transaction(()=>store.db.exec(`
     CREATE TABLE IF NOT EXISTS studio_model_settings(id INTEGER PRIMARY KEY CHECK(id=1),value TEXT NOT NULL,version INTEGER NOT NULL DEFAULT 1) STRICT;
     CREATE TABLE IF NOT EXISTS studio_credit_wallets(user_id TEXT PRIMARY KEY REFERENCES users(id),balance INTEGER NOT NULL DEFAULT 0 CHECK(balance>=0 AND balance<=1000000000),version INTEGER NOT NULL DEFAULT 1) STRICT;
@@ -74,26 +74,34 @@ export function createModels({store,actor,readJson,json,workerReady=()=>true}) {
   }
   function publicCatalog(userId) {
     const data=configuration();
+    if(subscriptions?.enabled) {
+      const billing=subscriptions.view(userId);
+      return {pricingVersion:`${data.pricingVersion}:subscription:${billing.version}`,defaultModelId:data.defaultModelId,creditsEnabled:true,billing,
+        models:data.models.filter(model=>model.enabled && model.compatible).map(model=>({id:model.id,label:model.label,tier:model.tier,provider:model.provider,workerReady:workerReady(model.provider),creditsPerBuild:Math.ceil(model.maxBudgetMicros/10000),maxBudgetMicros:model.maxBudgetMicros,maxOutputTokens:model.maxOutputTokens,maxCalls:model.maxCalls})),wallet:billing.wallet};
+    }
     return {pricingVersion:data.pricingVersion,defaultModelId:data.defaultModelId,creditsEnabled:data.creditsEnabled,
       models:data.models.filter(model=>model.enabled && model.compatible).map(model=>({id:model.id,label:model.label,tier:model.tier,provider:model.provider,workerReady:workerReady(model.provider),
         creditsPerBuild:model.creditsPerBuild,maxBudgetMicros:model.maxBudgetMicros,maxOutputTokens:model.maxOutputTokens,maxCalls:model.maxCalls})),wallet:wallet(userId)};
   }
-  function select(body) {
+  function select(body,userId) {
     const data=configuration(), id=body.modelId ?? data.defaultModelId;
     const model=data.models.find(model=>model.id===id && model.enabled && model.compatible);
     insist(model,503,'Choose an enabled coding model. The owner must configure compatible models and current prices first.');
-    if (data.configured || data.creditsEnabled || body.modelId !== undefined) {
-      insist(body.pricingVersion === data.pricingVersion,409,'Model pricing changed. Reload the model selector and confirm the current price.');
-      insist(body.quotedCredits === (data.creditsEnabled ? model.creditsPerBuild : 0),409,'The credit quote changed. Review it before generating.');
+    const metered=Boolean(subscriptions?.enabled), pricingVersion=metered?publicCatalog(userId).pricingVersion:data.pricingVersion;
+    const credits=metered?Math.ceil(model.maxBudgetMicros/10000):data.creditsEnabled?model.creditsPerBuild:0;
+    if (metered || data.configured || data.creditsEnabled || body.modelId !== undefined) {
+      insist(body.pricingVersion === pricingVersion,409,'Model pricing changed. Reload the model selector and confirm the current price.');
+      insist(body.quotedCredits === credits,409,'The credit quote changed. Review it before generating.');
     }
     const s=studioSettings(store);
     return {...s,...Object.fromEntries(Object.keys(PROVIDER_DEFAULTS).map(key=>[key,model[key]])),model:model.id,modelLabel:model.label,modelTier:model.tier,
       inputUsdPerMillion:model.inputUsdPerMillion,cachedInputUsdPerMillion:model.cachedInputUsdPerMillion,outputUsdPerMillion:model.outputUsdPerMillion,
       maxOutputTokens:model.maxOutputTokens,maxCalls:model.maxCalls,maxBudgetMicros:model.maxBudgetMicros,timeoutSeconds:model.timeoutSeconds,
-      pricingVersion:data.pricingVersion,creditsPerBuild:data.creditsEnabled ? model.creditsPerBuild : 0,creditsEnabled:data.creditsEnabled,
-      creditSettlement:'proposal-success-otherwise-review'};
+      pricingVersion,creditsPerBuild:credits,creditsEnabled:metered || data.creditsEnabled,subscriptionBilling:metered,
+      creditSettlement:'delivered-only'};
   }
   function reserve(jobId,userId,settings) {
+    if(settings.subscriptionBilling){subscriptions.reserve(jobId,userId,settings.maxBudgetMicros);return;}
     const amount=settings.creditsEnabled ? settings.creditsPerBuild : 0;
     if (!amount) return;
     insist(wallet(userId).available >= amount,409,'Not enough available Studio credits for this model. Pending reservations cannot be spent twice.');
@@ -102,6 +110,9 @@ export function createModels({store,actor,readJson,json,workerReady=()=>true}) {
   }
   function settle(jobId,next,actorId='system',reason='') {
     insist(['charged','released','pending'].includes(next),400,'Invalid credit settlement.');
+    const job=store.db.prepare('SELECT settings,cost,status,result FROM studio_jobs WHERE id=?').get(jobId), settings=job?JSON.parse(job.settings):{};
+    if(settings.subscriptionBilling){subscriptions.settle(jobId,['review','applied'].includes(job.status),job.cost,!JSON.parse(job.result || '{}').accounting);return;}
+    if(next==='pending' && settings.creditSettlement==='delivered-only')next='released';
     const row=store.db.prepare('SELECT * FROM studio_job_credits WHERE job_id=?').get(jobId);
     if (!row || ['charged','released'].includes(row.state) || row.state===next) return;
     if (next==='charged') {
@@ -120,7 +131,7 @@ export function createModels({store,actor,readJson,json,workerReady=()=>true}) {
   function describe(row) {
     const s=JSON.parse(row.settings), credit=store.db.prepare('SELECT amount,state FROM studio_job_credits WHERE job_id=?').get(row.id);
     return {model:s.model,modelLabel:s.modelLabel || s.model,provider:s.provider||'openai',pricingVersion:s.pricingVersion || null,
-      credits:credit || {amount:0,state:'not-used'}};
+      credits:s.subscriptionBilling?subscriptions.describe(row.id):credit || {amount:0,state:'not-used'}};
   }
   function history(userId) {
     return store.db.prepare('SELECT id,kind,delta,amount,job_id AS jobId,detail,created_at AS createdAt FROM studio_credit_ledger WHERE user_id=? ORDER BY id DESC LIMIT 100').all(userId);
@@ -131,7 +142,7 @@ export function createModels({store,actor,readJson,json,workerReady=()=>true}) {
     const a=await actor(req,method!=='GET',path.startsWith('/api/admin/')?'settings:manage':null);
     if (path.startsWith('/api/admin/')) insist(a.owner,403,'Only the configured owner can manage model pricing or credits.');
     if (path==='/api/studio/models' && method==='GET') { json(res,200,publicCatalog(a.user.id)); return true; }
-    if (path==='/api/studio/credits' && method==='GET') { json(res,200,{wallet:wallet(a.user.id),items:history(a.user.id)}); return true; }
+    if (path==='/api/studio/credits' && method==='GET') { json(res,200,subscriptions?.enabled?{wallet:subscriptions.view(a.user.id).wallet,items:subscriptions.history(a.user.id)}:{wallet:wallet(a.user.id),items:history(a.user.id)}); return true; }
     if (path==='/api/admin/models' && method==='GET') { json(res,200,{...configuration(),presets:VERIFIED_PRESETS}); return true; }
     if (path==='/api/admin/models' && method==='PATCH') {
       const body=await readJson(req,131072); fields(body,['version','models','defaultModelId','creditsEnabled']);

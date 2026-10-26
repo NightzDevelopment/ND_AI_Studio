@@ -47,3 +47,5 @@ dialog{border-radius:12px}
 @media(max-width:720px){.live-preview{padding:15px;margin-top:18px}.live-preview-heading{align-items:flex-start}.live-preview-heading h2{font-size:20px}.live-preview pre{font-size:11px;max-height:310px;padding:12px}.live-preview-notice{font-size:11px}.source-sync-status{margin-top:-8px;font-size:11px}}
 
 .live-preview-jump{width:100%;margin-top:8px}
+
+#billing-view .billing-card{display:flex;flex-direction:column;gap:14px}#billing-view .billing-price{font-size:25px;color:var(--text);font-weight:650}#billing-view .billing-accept{display:grid;grid-template-columns:18px minmax(0,1fr);gap:10px;align-items:start;font-size:12px}#billing-view .billing-accept input{width:18px;height:18px;margin:3px 0 0}#billing-view .billing-card button{margin-top:auto}#billing-view .admin-card>button{margin-right:8px;margin-top:12px}#billing-view>.notice{margin-bottom:20px}

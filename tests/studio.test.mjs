@@ -345,14 +345,14 @@ test('provider advertisements persist through an API restart and do not revoke a
   const status=await next.call('/api/worker/status',{method:'POST',body:{},user:null,worker:true});assert.deepEqual(status.data,{ready:true,providers:[]});
 });
 
-test('queued cancellation that overlaps a worker claim preserves pending credits for potential provider spend',async t=>{
+test('queued cancellation overlapping a worker claim restores credits while retaining provider spending',async t=>{
   const f=await fixture(t);await f.enabled();providerCatalog(f);const p=await f.create();const queued=await queueProvider(f,p,'test-openai');assert.equal(queued.status,202);
   const pending=await f.partial(`/api/jobs/${queued.data.job.id}/cancel`);
   const claimed=await f.claim();assert.equal(claimed.id,queued.data.job.id);
   const cancelled=await pending.finish();assert.equal(cancelled.status,200);
   const job=f.store.db.prepare('SELECT status,cost FROM studio_jobs WHERE id=?').get(claimed.id);assert.equal(job.status,'cancelled');assert.equal(job.cost,100000);
-  const wallet=(await f.call('/api/studio/credits')).data.wallet;assert.equal(wallet.balance,50);assert.equal(wallet.reserved,0);assert.equal(wallet.pending,5);assert.equal(wallet.available,45);
-  assert.equal(f.store.db.prepare("SELECT count(*) n FROM studio_credit_ledger WHERE job_id=? AND kind='released'").get(claimed.id).n,0);
+  const wallet=(await f.call('/api/studio/credits')).data.wallet;assert.equal(wallet.balance,50);assert.equal(wallet.reserved,0);assert.equal(wallet.pending,0);assert.equal(wallet.available,50);
+  assert.equal(f.store.db.prepare("SELECT count(*) n FROM studio_credit_ledger WHERE job_id=? AND kind='released'").get(claimed.id).n,1);
 });
 
 test('a project change during a partial enqueue rejects the stale build before reserving credits',async t=>{

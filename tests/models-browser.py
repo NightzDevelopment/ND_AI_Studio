@@ -29,9 +29,10 @@ HTML = """<!doctype html><html><head><title>Model controls fixture</title></head
 <form id="build-form"></form><div id="admin-root"></div>
 <script type="module">
 import {createModelControls} from '/models.js';
+import {renderBilling} from '/billing.js';
 const clone=value=>structuredClone(value);
 window.fixture={identity:'owner-a',ready:false,calls:[],errors:[],notices:[],gates:[],confirmations:[],holds:[],
- catalog:CATALOG,publicData:PUBLIC,
+ billing:BILLING,catalog:CATALOG,publicData:PUBLIC,
  wallets:{WALLETS}};
 window.arm=(path,method='GET')=>{const gate={path,method,entered:false};gate.promise=new Promise(resolve=>gate.release=resolve);fixture.gates.push(gate);return fixture.gates.length-1;};
 window.release=index=>fixture.gates[index].release();
@@ -39,6 +40,9 @@ async function api(path,{method='GET',body}={}){
  fixture.calls.push({path,method,body:clone(body)});let result;
  if(method==='GET'&&fixture.failReads?.includes(path))throw new Error('Fixture balance refresh unavailable.');
  if(path==='/api/studio/models')result=clone(fixture.publicData);
+ else if(path==='/api/studio/billing')result=clone(fixture.billing);
+ else if(path==='/api/studio/billing/cancel'){fixture.billing.subscription.cancelAtEnd=body.cancelAtEnd;result=clone(fixture.billing);}
+ else if(path==='/api/studio/billing/checkout')result={url:'https://checkout.stripe.com/c/pay/fixture'};
  else if(path==='/api/studio/credits')result={wallet:clone(fixture.publicData.wallet),items:[]};
  else if(path==='/api/admin/models'){
   if(method==='PATCH')fixture.catalog={...clone(body),version:fixture.catalog.version+1};
@@ -63,6 +67,7 @@ async function confirmAction(...args){fixture.confirmations.push(args);if(fixtur
 async function reasonDialog(){if(fixture.deferReason)return await new Promise(resolve=>fixture.resolveReason=resolve);return 'Fixture reconciliation';}
 window.controls=createModelControls({api,el,button,field,selectField,table,notice:value=>fixture.notices.push(value),confirmAction,reasonDialog,onChange:()=>{},getUserId:()=>fixture.identity});
 window.renderAdmin=()=>controls.renderAdmin(document.getElementById('admin-root'));
+window.showBilling=()=>renderBilling({root:document.getElementById('billing-view') || document.getElementById('admin-root'),api,el,button,confirmAction,current:()=>fixture.identity==='owner-a'});
 await controls.refresh(true);fixture.ready=true;
 </script></body></html>"""
 
@@ -78,7 +83,8 @@ class ModelControlsBrowser(unittest.TestCase):
                       models=[MODEL, OTHER], wallet=dict(available=50, reserved=0, pending=0))
         wallets = {A: dict(user=dict(discordId=A, displayName='Alice'), wallet=dict(available=50, reserved=0, pending=0, version=1), items=[]),
                    B: dict(user=dict(discordId=B, displayName='Bob'), wallet=dict(available=500, reserved=0, pending=0, version=1), items=[])}
-        html = HTML.replace('CATALOG', json.dumps(catalog)).replace('PUBLIC', json.dumps(public)).replace('WALLETS', json.dumps(wallets)[1:-1]).encode()
+        billing = dict(enabled=True, version='fixture-v1', hasCustomer=False, subscription=None, wallet=dict(available=369, reserved=0, pending=0), limits=dict(dailyBuilds=5, dailyBudgetMicros=1000000), plans=[dict(id=key, name=name, priceCents=price, credits=credits, available=True) for key, name, price, credits in [('starter', 'Starter', 1999, 369), ('pro', 'Pro', 2999, 1329), ('max', 'Max', 4999, 3249)]])
+        html = HTML.replace('BILLING', json.dumps(billing)).replace('CATALOG', json.dumps(catalog)).replace('PUBLIC', json.dumps(public)).replace('WALLETS', json.dumps(wallets)[1:-1]).encode()
 
         class Handler(SimpleHTTPRequestHandler):
             def __init__(self, *args, **kwargs):
@@ -139,6 +145,52 @@ class ModelControlsBrowser(unittest.TestCase):
         self.page.locator('input[name=discordId]').fill(user)
         self.page.get_by_role('button', name='Load account', exact=True).click()
         expect(self.page.get_by_role('heading', name='Alice' if user == A else 'Bob', exact=True)).to_be_visible()
+
+    def test_billing_prices_and_acknowledgment_precede_checkout(self):
+        self.page.evaluate('showBilling()')
+        expect(self.page.get_by_role('heading', name='Plans & usage')).to_be_visible()
+        for price in ['$19.99 / month', '$29.99 / month', '$49.99 / month']:
+            expect(self.page.get_by_text(price, exact=True)).to_be_visible()
+        checkout = self.page.get_by_role('button', name='Choose Starter', exact=True)
+        expect(checkout).to_be_disabled()
+        self.page.get_by_role('checkbox').first.check()
+        expect(checkout).to_be_enabled()
+        gate = self.arm('/api/studio/billing/checkout', 'POST')
+        checkout.click()
+        self.wait_gate(gate)
+        body = self.page.evaluate("fixture.calls.find(call=>call.path==='/api/studio/billing/checkout').body")
+        self.assertEqual(body, dict(planId='starter', acceptedTerms=True, pricingVersion='fixture-v1'))
+        self.page.route('https://checkout.stripe.com/**', lambda route: route.fulfill(status=200, body='Fixture checkout'))
+        self.release(gate)
+        self.page.wait_for_url('https://checkout.stripe.com/**')
+        # The fixture's state is on its original document; return before shared teardown.
+        self.page.go_back()
+        self.page.wait_for_function('window.fixture?.ready===true')
+
+    def test_billing_cancel_preserves_paid_period_and_allows_resuming(self):
+        self.page.evaluate("fixture.billing.subscription={plan:'starter',priceCents:1999,cancelAtEnd:false,renewsAt:'2030-01-01T00:00:00Z'};showBilling()")
+        self.page.get_by_role('button', name='Cancel next renewal', exact=True).click()
+        expect(self.page.get_by_role('button', name='Keep subscription renewing')).to_be_visible()
+        expect(self.page.get_by_text('369 credits available', exact=False)).to_be_visible()
+        self.assertTrue(self.page.evaluate('fixture.billing.subscription.cancelAtEnd'))
+        self.page.get_by_role('button', name='Keep subscription renewing', exact=True).click()
+        expect(self.page.get_by_role('button', name='Cancel next renewal')).to_be_visible()
+        self.assertFalse(self.page.evaluate('fixture.billing.subscription.cancelAtEnd'))
+
+    def test_disabled_subscriptions_have_no_purchase_controls(self):
+        self.page.evaluate('fixture.billing.enabled=false;showBilling()')
+        expect(self.page.get_by_text('Subscriptions are not open yet.', exact=False)).to_be_visible()
+        expect(self.page.get_by_role('checkbox')).to_have_count(0)
+        self.assertFalse(self.page.evaluate("fixture.calls.some(call=>call.path.endsWith('/checkout'))"))
+
+    def test_delayed_billing_read_cannot_replace_a_different_accounts_view(self):
+        gate = self.arm('/api/studio/billing')
+        self.page.evaluate('window.oldBilling=showBilling();null')
+        self.wait_gate(gate)
+        self.page.evaluate("fixture.identity='owner-b';document.getElementById('admin-root').textContent='Other account view'")
+        self.release(gate)
+        self.page.evaluate('oldBilling')
+        expect(self.page.locator('#admin-root')).to_have_text('Other account view')
 
     def test_catalog_save_preserves_newer_edits_and_advances_the_next_version(self):
         self.admin()

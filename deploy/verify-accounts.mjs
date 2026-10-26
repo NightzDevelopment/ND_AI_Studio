@@ -7,7 +7,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 
 const root = new URL('../', import.meta.url);
 const origin = 'https://ai.nightz.dev';
-const assets = ['index.html', 'styles.css', 'app.js', 'data.js', 'catalog.json', 'account.js', 'account.css', 'controls.js', 'workspace.html', 'workspace.css', 'workspace.js', 'workspace-drafts.js', 'models.js', 'models.css', 'branding.css', 'legal.css', 'nd-logo.webp', 'favicon.png', 'favicon.ico', 'policies.html', 'terms.html', 'privacy.html', 'acceptable-use.html'];
+const assets = ['index.html', 'styles.css', 'app.js', 'data.js', 'catalog.json', 'account.js', 'account.css', 'controls.js', 'workspace.html', 'workspace.css', 'workspace.js', 'workspace-drafts.js', 'models.js', 'models.css', 'billing.js', 'branding.css', 'legal.css', 'nd-logo.webp', 'favicon.png', 'favicon.ico', 'policies.html', 'terms.html', 'privacy.html', 'acceptable-use.html'];
 const digest = value => createHash('sha256').update(value).digest('hex');
 
 // Every request uses loopback, a fresh connection and normal TLS verification.

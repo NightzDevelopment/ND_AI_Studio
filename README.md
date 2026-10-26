@@ -98,3 +98,7 @@ The database stays outside all public directories. Keep encrypted off-host backu
 Never commit API keys, Discord tokens, SSH credentials, customer uploads or databases. Do not put secrets in project files, prompts or browser fields. Bot and worker credentials are separate from OAuth. The first registered account never becomes an owner automatically.
 
 No open-source license has been selected. Third-party assets require their own permission, provenance and attribution. The older concept image contains illustrative credit balances and projects which are not implemented product claims.
+
+## Optional monthly subscriptions
+
+[Subscription pricing, failure restoration and Stripe deployment](docs/SUBSCRIPTIONS.md) describe the disabled-by-default Starter, Pro and Max plans. Source editing remains available without a subscription; configured generation limits still apply.

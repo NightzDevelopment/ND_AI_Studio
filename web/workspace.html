@@ -17,6 +17,7 @@
       <a href="/#projects"><span aria-hidden="true">/</span>Saved briefs</a>
       <a href="/#tools"><span aria-hidden="true">+</span>Tool library</a>
       <a href="/#account"><span aria-hidden="true">@</span>My account</a>
+      <a href="#billing" id="billing-nav"><span aria-hidden="true">$</span>Plans &amp; usage</a>
       <a href="#admin" id="admin-nav" hidden><span aria-hidden="true">::</span>Control room</a>
     </nav>
     <div class="rail-bottom"><p class="eyebrow">SOURCE FIRST</p><p>Your files. Your versions.<br>Your next build.</p><small>No generated code runs in this website.</small></div>
@@ -34,6 +35,7 @@
         <div class="toolbar"><label class="search"><span class="sr-only">Search projects</span><input id="project-search" type="search" placeholder="Search your projects" autocomplete="off"></label><label class="filter-label">View<select id="project-filter"><option value="active">Active projects</option><option value="favorites">Favorites</option><option value="archived">Archived</option><option value="all">All projects</option></select></label><label class="filter-label">Sort<select id="project-sort"><option value="recent">Recently updated</option><option value="name">Project name</option></select></label></div>
         <p id="project-count" class="muted fine" aria-live="polite"></p><div id="project-grid" class="project-grid"></div>
       </section>
+      <section id="billing-view" hidden aria-label="Plans and usage"></section>
       <section id="editor-view" hidden>
         <div class="project-heading"><div><a href="#projects" class="back">All projects /</a><h1 id="project-name"></h1><p id="project-meta" class="muted"></p></div><div class="actions"><button id="project-settings">Project details</button><button id="history-button">History</button><button id="sync-source">Check for updates</button><a id="export-project" class="secondary">Download ZIP</a></div></div>
         <p id="source-sync-status" class="source-sync-status" role="status">Saved source loaded.</p>

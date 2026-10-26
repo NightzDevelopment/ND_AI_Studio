@@ -22,7 +22,7 @@ The WebP logo and PNG/ICO favicons are resized exports of the logo supplied in t
 - web/account.js and server/app.mjs: profile/brief export; source ZIPs use separate project export routes. No self-service account deletion route was found.
 - web/workspace.js and web/workspace-drafts.js: account/project-scoped source draft recovery in tab-local sessionStorage, with explicit resolution when incoming saved source conflicts. Drafts are not uploaded until saved.
 - server/studio-models.mjs: owner-granted internal credits, reservations, ledger entries, charged completed output and pending holds for uncertain usage. Delivered output blocked from automatic saving by a revision/storage conflict retains the existing delivered-proposal credit treatment.
-- No checkout, customer subscriptions, credit purchases or payment collection is implemented in the reviewed Studio release. Internal accounting does not establish a business decision that Studio must be free.
+- Optional Stripe-hosted monthly subscriptions are implemented but disabled by default. See docs/SUBSCRIPTIONS.md for checkout, cancellation, paid-period allowances and automatic failed-build allowance restoration. These legal drafts remain inactive and do not establish the final subscription-payment refund policy.
 
 These checks describe source, not all VPS, worker, provider-dashboard or hosting practices. No live provider configuration was inspected.
 

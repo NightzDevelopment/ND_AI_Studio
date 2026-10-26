@@ -1,12 +1,17 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { StudioError, insist, fields, string, integer, digest, validateFiles, validatePreviewChanges, filePath, migrateStudio, studioSettings, settingsData, control, audit, event, project, snapshot, saveRevision, newProject, zipFiles, IMPLEMENTED_TOOLS, PERMISSIONS } from './studio-domain.mjs';
 import { createModels } from './studio-models.mjs';
+import { createSubscriptions } from './subscriptions.mjs';
 import { memberRoles, discordRequest } from './studio-discord.mjs';
 
 export function createStudio({ store, config, catalog, required, mutation, readJson:readBody, json, fetcher = fetch }) {
   migrateStudio(store);
   const actors = new WeakMap();
-  const models = createModels({store,actor,readJson,json,workerReady});
+  const subscriptions = createSubscriptions({store,config,actor,readJson,json,fetcher,canSell:(userId,plan)=>{
+    const settings=studioSettings(store), limits=control(store,userId);
+    return workerReady() && IMPLEMENTED_TOOLS.some(id=>settings.tools[id]==='members') && limits.daily_limit>0 && models.configuration().models.some(model=>model.enabled && model.compatible && workerReady(model.provider || 'openai') && model.maxBudgetMicros<=Math.min(plan.credits*10000,limits.daily_budget));
+  }});
+  const models = createModels({store,actor,readJson,json,workerReady,subscriptions});
   const owners = new Set(config.ownerIds || []);
   const isOwner = user => Boolean(user && owners.has(user.discord_id));
   const blocked = id => control(store, id).status === 'suspended';
@@ -83,7 +88,7 @@ export function createStudio({ store, config, catalog, required, mutation, readJ
     const row = store.db.prepare('SELECT * FROM studio_jobs WHERE id=?').get(body.id || '');
     insist(row && row.status === 'running' && row.lease_until > Date.now() && typeof body.lease === 'string' && row.lease === digest(body.lease), 409, 'Build lease expired or cancelled.');
     const user = store.user(row.user_id), p = project(store,row.user_id,row.project_id);
-    insist(!blocked(user.id) && !p.archived && allowed(p.tool_id,user), 409, 'Build access was revoked.');
+    insist(!blocked(user.id) && !p.archived && allowed(p.tool_id,user) && subscriptions.jobAllowed(row.id), 409, 'Build access was revoked.');
     return row;
   }
   async function route(req, res, url) {
@@ -92,6 +97,8 @@ export function createStudio({ store, config, catalog, required, mutation, readJ
     try {
       expireJobs();
       models.recover();
+      subscriptions.recover();
+      if (await subscriptions.route(req,res,url)) return true;
       if (await models.route(req,res,url)) return true;
       if (path.startsWith('/api/worker/')) {
         workerAuth(req);
@@ -117,7 +124,7 @@ export function createStudio({ store, config, catalog, required, mutation, readJ
             const rows = store.db.prepare("SELECT * FROM studio_jobs WHERE status='queued' ORDER BY created_at LIMIT 20").all();
             for (const row of rows) {
               const p = project(store,row.user_id,row.project_id), user = store.user(row.user_id);
-              if (blocked(user.id) || p.archived || !allowed(p.tool_id,user)) {
+              if (blocked(user.id) || p.archived || !allowed(p.tool_id,user) || !subscriptions.jobAllowed(row.id)) {
                 store.db.prepare("UPDATE studio_jobs SET status='cancelled',preview=NULL,updated_at=? WHERE id=?").run(new Date().toISOString(),row.id); models.settle(row.id,'released'); continue;
               }
               const settings = JSON.parse(row.settings);
@@ -378,7 +385,7 @@ export function createStudio({ store, config, catalog, required, mutation, readJ
             const current=project(store,a.user.id,row.id);
             insist(!current.archived && current.version === body.version,409,'Project changed. Reload before generating.');
             insist(allowed(current.tool_id,a.user),403,'This generator is not enabled for your account.');
-            const s=models.select(body);
+            const s=models.select(body,a.user.id);
             insist(workerReady(s.provider || 'openai'),503,'The connected worker has no configured credential for the selected provider. Choose a supported model or configure that provider privately on the worker.');
             const limits=control(store,a.user.id), day=now.slice(0,10);
             const usage=store.db.prepare("SELECT count(*) n,coalesce(sum(CASE WHEN status IN ('queued','running') THEN reserve ELSE cost END),0) cost FROM studio_jobs WHERE user_id=? AND created_at>=?").get(a.user.id,day);

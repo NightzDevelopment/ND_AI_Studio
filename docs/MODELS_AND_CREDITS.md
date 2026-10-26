@@ -1,6 +1,6 @@
 # Model selection, internal credits and validator permissions
 
-This update keeps the existing application, database and worker deployment layout. It does not add checkout, subscriptions, credit purchases, a cash exchange rate or automatic provider-price synchronization.
+This document describes the legacy fixed-price testing-credit system. Optional monthly subscriptions now have a separate usage allowance, checkout and cancellation flow described in [SUBSCRIPTIONS.md](SUBSCRIPTIONS.md). Subscriptions are disabled by default; historical wallet balances retain their original units. Automatic provider-price synchronization is not implemented.
 
 ## Validator failure and repair
 
@@ -36,7 +36,7 @@ Every submitted job captures the provider, selected model, caching policy, price
 
 Credit enforcement is off by default. Existing users receive no invented balance. The owner can grant or adjust credits for registered Discord accounts with a required reason, revision check and idempotent request ID. The ledger records every reserve, release, pending hold, charge and adjustment.
 
-When enabled, the selected model's fixed credits are reserved atomically with the job. A successfully delivered validated result is charged once. Automatic saving and replaying a completion do not add another charge. Validated output retained because a newer revision or source quota blocks saving is still delivered output and has the same credit treatment as the earlier proposal workflow. A queued cancellation or known zero-usage failure releases the reservation. Failed, expired or interrupted jobs with possible provider usage remain pending for explicit owner reconciliation. Pending holds cannot be spent twice. A released Studio credit hold is not a refund from OpenAI.
+When enabled, the selected model's fixed credits are reserved atomically with the job. A successfully delivered validated result is charged once. Automatic saving and replaying a completion do not add another charge. Validated output retained because a newer revision or source quota blocks saving is still delivered output and has the same credit treatment as the earlier proposal workflow. A queued cancellation or known zero-usage failure releases the reservation. New failed, expired or interrupted jobs release their full customer reservation even when a provider may bill Studio. Jobs captured under the historical review policy still remain pending for explicit owner reconciliation. Pending holds cannot be spent twice. A released Studio credit hold is not a refund from OpenAI.
 
 A delivered result with unreconciled provider token cost still settles its captured fixed Studio credit charge once. Provider budget retention and customer Studio credits are separate records; unknown provider billing does not invent a refund, an additional credit charge or an exact provider invoice.
 
