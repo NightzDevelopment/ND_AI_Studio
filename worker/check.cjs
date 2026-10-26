@@ -1,9 +1,10 @@
 'use strict';
 // Runs only inside the disposable validator image. Never import or execute project source.
 const fs=require('node:fs'), path=require('node:path'), cp=require('node:child_process');
+const {inspectManifest}=require('./manifest.cjs');
 function inspectProject(root,tool,runner=cp.spawnSync) {
-  const checks=[]; let ok=true;
-  function fail(message) { ok=false; checks.push(message.slice(0,1900)); }
+  const checks=[], failures=[]; let ok=true;
+  function fail(message) { ok=false; failures.push(message.slice(0,1900)); }
   function walk(directory) {
     return fs.readdirSync(directory,{withFileTypes:true}).flatMap(entry=> {
       const filename=path.join(directory,entry.name);
@@ -34,7 +35,10 @@ function inspectProject(root,tool,runner=cp.spawnSync) {
     if (tool==='ai-script-generator') {
       const manifest=path.join(root,'fxmanifest.lua');
       if (!text.has(manifest)) fail('fxmanifest.lua is required at the project root.');
-      else if (!/\bfx_version\s+['"]cerulean['"]/.test(text.get(manifest)) || !/\bgame\s+['"]gta5['"]/.test(text.get(manifest))) fail('fxmanifest.lua must declare cerulean and gta5.');
+      else {
+        const result=inspectManifest(text.get(manifest),files.map(file=>path.relative(root,file).split(path.sep).join('/')));
+        result.errors.forEach(fail);checks.push(...result.notes);
+      }
       checks.push('Not tested: FiveM native availability, framework behavior, NUI callbacks, server events or in-game execution.');
     } else if (tool==='discord-bot-generator') {
       const filename=path.join(root,'package.json');
@@ -42,7 +46,9 @@ function inspectProject(root,tool,runner=cp.spawnSync) {
       else {
         try {
           const pkg=JSON.parse(text.get(filename));
-          if (!pkg?.dependencies?.['discord.js']) fail('Declare discord.js in dependencies.');
+          const object=value=>value!==null&&typeof value==='object'&&!Array.isArray(value);
+          if (!object(pkg) || !object(pkg.dependencies) || typeof pkg.dependencies['discord.js']!=='string' || !pkg.dependencies['discord.js'].trim()) fail('Declare discord.js as a non-empty dependency string in package.json.');
+          if (pkg?.scripts!==undefined && (!object(pkg.scripts) || Object.values(pkg.scripts).some(command=>typeof command!=='string'))) fail('package.json scripts must be an object of string commands.');
           if (Object.keys(pkg?.scripts || {}).some(key=>['preinstall','install','postinstall','prepublish','preprepare','prepare','postprepare','predependencies','dependencies','postdependencies'].includes(key))) fail('Package installation lifecycle scripts are not allowed.');
           const entry=pkg?.main || 'index.js';
           if (typeof entry!=='string' || !/^[A-Za-z0-9_./-]+$/.test(entry) || entry.split('/').includes('..') || entry.startsWith('/') || !text.has(path.join(root,entry))) fail('Declare an existing project entry file in package.json main.');
@@ -51,7 +57,7 @@ function inspectProject(root,tool,runner=cp.spawnSync) {
       checks.push('Not tested: package installation, Discord authentication, Gateway intents, slash command registration or runtime boot.');
     } else throw Object.assign(new Error('Unsupported validator tool.'),{code:'UNSUPPORTED_TOOL'});
     if (!files.some(file=>/\/README(?:\.md|\.txt)?$/i.test(file))) fail('Include a README with installation, dependencies and runtime checks.');
-    return {ok,kind:ok?'ok':'source',checks:checks.slice(0,100)};
+    return {ok,kind:ok?'ok':'source',checks:[...failures,...checks].slice(0,100)};
   } catch (error) {
     const code=typeof error.code==='string' && /^[A-Z_0-9]{1,40}$/.test(error.code) ? error.code : 'INSPECTION_FAILED';
     return {ok:false,kind:'infrastructure',checks:[`Validator infrastructure failed (${code}). No source repair should be attempted.`]};
