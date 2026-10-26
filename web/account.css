@@ -7,3 +7,5 @@
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
 
 form.settings-panel{overflow:visible}.select-options,dialog{scrollbar-width:thin;scrollbar-color:#70404f #16131b}.form-columns>label{min-width:0}.account-button,.top-actions{min-width:0}
+
+.profile-state{min-height:1.7em;font-size:12px;line-height:1.7;color:var(--muted);margin:14px 0 0}.settings-panel[aria-busy=true] [type=submit]{cursor:progress}.settings-panel .form-error{overflow-wrap:anywhere}#account-retry{margin-top:8px}.account-panels .dialog-actions{flex-wrap:wrap}
