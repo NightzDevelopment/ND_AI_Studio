@@ -96,6 +96,35 @@ export function enhanceSelect(select) {
 }
 export function refreshSelects(root = document) {
   root.querySelectorAll('select').forEach(enhanceSelect);
+  enhanceNavigation();
+}
+
+const navigationControls = new WeakSet();
+export function enhanceNavigation(root = document) {
+  for (const button of root.querySelectorAll('[data-navigation-toggle]')) {
+    if (navigationControls.has(button)) continue;
+    const nav = document.getElementById(button.getAttribute('aria-controls'));
+    if (!nav) continue;
+    navigationControls.add(button); button.hidden = false;
+    const container = button.parentElement; container.classList.add('navigation-ready');
+    const setOpen = open => {
+      nav.dataset.open = String(open); button.setAttribute('aria-expanded', String(open));
+      button.textContent = open ? 'Close menu' : 'Menu';
+    };
+    setOpen(false);
+    button.addEventListener('click', () => { active?.close(); setOpen(nav.dataset.open !== 'true'); });
+    nav.addEventListener('click', event => {
+      if (!event.target.closest('a[href]') || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+      setOpen(false);
+      requestAnimationFrame(() => document.querySelector('main')?.focus({ preventScroll:true }));
+    });
+    document.addEventListener('keydown', event => {
+      if (event.defaultPrevented || event.key !== 'Escape' || nav.dataset.open !== 'true' || document.querySelector('dialog[open]')) return;
+      event.preventDefault(); setOpen(false); button.focus();
+    });
+    document.addEventListener('pointerdown', event => { if (!container.contains(event.target)) setOpen(false); });
+    matchMedia('(max-width:720px)').addEventListener('change', () => setOpen(false));
+  }
 }
 
 export function confirmAction(title, description, label = 'Delete') {

@@ -9,3 +9,15 @@
 .policy-disclosure{max-width:560px;margin:12px auto;color:#bfb2c0;font-size:11px;line-height:1.8}
 .policy-disclosure a,.build-panel .fine a{color:#f6a5b7;text-decoration:underline;text-underline-offset:3px}
 @media(max-width:720px){.brand .nd-brand-logo{width:40px;height:40px;flex-basis:40px}.policy-links{gap:6px 14px}.policy-links a{font-size:11px}}
+.nav-toggle{display:none}
+@media(max-width:720px){
+  .sidebar.navigation-ready,.rail.navigation-ready{position:relative;inset:auto;width:100%;padding:18px;border-right:0;border-bottom:1px solid var(--line);min-height:78px}
+  .navigation-ready .brand{max-width:calc(100% - 96px);min-height:42px}
+  .navigation-ready .nav-toggle{position:absolute;top:19px;right:18px;display:inline-flex;align-items:center;justify-content:center;min-width:78px;min-height:40px;padding:8px 12px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--text);font-size:12px;font-weight:600;cursor:pointer}
+  .navigation-ready nav{display:none;margin-top:16px;overflow:visible}
+  .navigation-ready nav[data-open=true]{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}
+  .navigation-ready nav a{display:flex;align-items:center;min-height:44px;min-width:0;padding:10px 12px;font-size:12px;white-space:normal;line-height:1.4}
+  .navigation-ready .nav-icon,.navigation-ready nav a>span[aria-hidden=true]{display:none}
+  .navigation-ready .nav-caption,.navigation-ready .sidebar-note,.navigation-ready .sidebar-footer,.navigation-ready .rail-caption,.navigation-ready .rail-bottom{display:none}
+  .sidebar.navigation-ready~.shell,.rail.navigation-ready~.shell{margin-left:0}
+}

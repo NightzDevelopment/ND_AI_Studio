@@ -2,3 +2,36 @@
 
 .draft-notice{display:flex;align-items:center;justify-content:space-between;gap:16px}.draft-notice p{color:inherit}.draft-notice button{flex-shrink:0}.draft-diff{margin-block:20px}.draft-diff>div:last-child{grid-column:1/-1}.draft-diff pre{white-space:pre-wrap;overflow-wrap:anywhere}@media(max-width:700px){.draft-notice{align-items:flex-start;flex-direction:column}}
 .select-option[aria-disabled=true]{opacity:.45;cursor:not-allowed}
+/* Keep the workbench, forms and recovery states consistent at every viewport. */
+.intro h1{font-size:36px;line-height:1.15;margin-block:10px 12px}
+.intro p:not(.eyebrow){max-width:620px;line-height:1.8}
+.project-heading h1,.project-card h2,.project-card h3{overflow-wrap:anywhere}
+.project-heading>div:first-child{min-width:0;max-width:100%}
+.editor-toolbar>span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.empty{min-height:220px;padding:40px 24px;gap:16px}
+.empty h1{font-size:32px}.empty h2{font-size:24px}.empty p{max-width:540px;line-height:1.8}
+#route-error .actions{justify-content:center;margin-top:10px}
+.project-grid>.empty{grid-column:1/-1}
+.toolbar input,.toolbar .select-trigger{min-height:44px}
+.file-list button{min-height:36px;line-height:1.5}
+.editor-toolbar .primary{min-height:36px}
+input:disabled,textarea:disabled{cursor:wait;opacity:.7}
+.build-panel form[aria-busy=true]{opacity:.85}
+.build-output .panel-heading{gap:14px;align-items:center}
+.build-output .actions{justify-content:flex-end}
+.admin-card{border-radius:10px}
+.admin-card h2{line-height:1.4}
+.table-wrap{border:1px solid var(--line);border-radius:8px}
+th{background:#151319;white-space:nowrap}td{line-height:1.7}
+dialog{border-radius:12px}
+.toast{font-size:13px;line-height:1.6;max-width:min(460px,calc(100% - 36px));box-shadow:0 10px 30px #0005}
+@media(max-width:720px){
+  .topbar{min-height:62px;height:auto;padding:12px 18px;gap:10px;flex-wrap:wrap}.top-actions{margin-left:auto}.breadcrumb{line-height:1.7}
+  .intro{padding-top:4px;padding-bottom:24px}.intro h1{font-size:31px}.intro p:not(.eyebrow){font-size:13px}.intro .status{font-size:10px}
+  .empty{min-height:200px;padding:30px 20px}.empty h1{font-size:28px}.empty h2{font-size:22px}.empty p{font-size:13px}
+  .primary,.secondary,button,.select-trigger,input{min-height:44px}.project-heading .actions>*{font-size:11px;min-height:40px}.project-heading .actions{width:100%}.project-heading .actions>*{flex:1 1 auto}
+  .filter-label{min-width:0}.toolbar{gap:10px}.toolbar .filter-label{flex:1 1 calc(50% - 5px)}.select-trigger{font-size:12px}
+  .file-list button{min-height:44px}.file-actions button{min-height:44px}.editor-toolbar .primary{min-height:40px}.editor-status{flex-wrap:wrap;gap:4px 10px}
+  .build-output .panel-heading{align-items:flex-start;flex-direction:column}.build-output .actions{width:100%;justify-content:flex-start}.build-output .actions>*{flex:1 1 auto;min-height:40px;font-size:11px}
+  .toast{left:18px;right:18px;bottom:18px;max-width:none}.dialog-actions>*{min-height:44px}.draft-notice{gap:12px}
+}

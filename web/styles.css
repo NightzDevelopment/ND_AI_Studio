@@ -11,3 +11,39 @@ dialog{color:var(--text);border:1px solid #44313e;background:#131217;border-radi
 @media(max-width:720px){.sidebar{position:relative;width:100%;padding:18px 18px 10px;border-right:0;border-bottom:1px solid var(--line)}.brand{font-size:15px}.brand small{font-size:6px}.nav-caption,.sidebar-note,.sidebar-footer{display:none}nav{display:flex;margin-top:18px;overflow-x:auto;gap:5px}nav a{white-space:nowrap;font-size:10px;padding:8px 10px;min-height:40px;gap:6px}.nav-icon{display:none}.nav-count{font-size:9px;margin-left:4px}.shell{margin-left:0}.topbar{height:65px;padding:0 19px}.breadcrumb{font-size:8px;gap:9px}.top-actions{gap:0}.preview-label{display:none}main{padding:19px 18px 0}.hero{margin-bottom:30px;border-radius:11px;min-height:0}.hero-copy{padding:27px 23px}.hero .eyebrow{font-size:8px;letter-spacing:1px}h1{font-size:44px}.hero-description{font-size:12px}.hero-actions{gap:9px}.hero-actions .primary,.hero-actions .secondary{font-size:10px;padding:11px 13px;gap:10px}.hero-footnote{font-size:9px;line-height:1.7}.section-heading{align-items:flex-start;gap:12px}h2{font-size:26px}.section-heading>.muted{font-size:8px;margin-top:8px;white-space:normal;text-align:right}.catalog-toolbar{gap:12px}.filters{gap:1px}.filters button{font-size:10px;padding-inline:11px}.search{flex-basis:100%;min-height:44px}.search input{font-size:12px}.tool-grid{gap:10px}.tool-card{padding:15px;min-height:220px}.tool-title{font-size:13px}.tool-summary{font-size:10px}.planned-label{font-size:7px;letter-spacing:.6px}.card-top{margin-bottom:18px}.card-bottom{font-size:8px;letter-spacing:0}.tool-glyph{height:30px;min-width:30px;font-size:10px}.form-columns{grid-template-columns:1fr;gap:0}dialog{padding:22px}.page-footer{font-size:8px;line-height:1.8;margin-top:30px;padding-bottom:calc(22px + env(safe-area-inset-bottom))}.project-actions{flex-wrap:wrap}.engine-row{font-size:11px}.engine-row span{font-size:9px}}
 @media(max-width:355px){.tool-grid{grid-template-columns:1fr}h1{font-size:37px}.tool-card{min-height:180px}}
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
+/* Shared product rhythm: restrained surfaces, clear actions and a focused overview. */
+.hero{min-height:0;border-radius:12px;background:var(--panel);grid-template-columns:minmax(0,1.3fr) minmax(280px,.8fr)}
+.hero-copy{padding:34px}
+.hero h1{font-size:clamp(34px,3.8vw,52px);line-height:1.08;letter-spacing:-.045em;max-width:660px}
+.hero-description{font-size:14px;line-height:1.8;max-width:590px;margin-top:20px}
+.hero-actions{gap:12px;align-items:center;margin-top:24px}
+.hero-actions .primary,.hero-actions .secondary{min-height:44px;font-size:12px;padding:11px 16px}
+.hero-library-link{font-size:12px;text-decoration:underline;text-underline-offset:4px;color:var(--muted);padding:10px 0}
+.hero-library-link:hover{color:var(--text)}
+.top-actions #new-brief{white-space:nowrap;flex-shrink:0}
+.hero-aside{background:#101014;padding:32px;border-left:1px solid var(--line)}
+.hero-aside .stack-row{padding-block:18px;gap:14px}
+.stack-row strong{font-size:13px;line-height:1.5}
+.stack-row small{font-size:11px;line-height:1.7;max-width:270px}
+.scope-note{font-size:11px;line-height:1.8;margin-top:20px;color:var(--muted);max-width:310px}
+.hero-footnote{font-size:11px;line-height:1.8;margin-top:18px;max-width:600px}
+body[data-view=overview] .catalog-toolbar{display:none}
+body[data-view=overview] .tool-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}
+body[data-view=overview] .tool-card{min-height:205px}
+.catalog-more{display:none;font-size:12px;color:var(--muted);text-decoration:underline;text-underline-offset:4px;margin-top:18px;width:fit-content}
+body[data-view=overview] .catalog-more{display:block}
+.catalog-more:hover{color:var(--text)}
+.tool-title,.project-card h3,.project-card h2{overflow-wrap:anywhere}
+input:disabled,textarea:disabled{cursor:wait;opacity:.7}
+input:focus-visible,textarea:focus-visible{border-color:#b54a61}
+dialog{border-radius:12px}
+.dialog-heading>button{min-width:36px;min-height:36px}
+.toast{font-size:13px;line-height:1.6;max-width:min(460px,calc(100% - 36px));box-shadow:0 10px 30px #0005}
+@media(max-width:1150px){.hero{grid-template-columns:1fr}.hero-aside{display:none}.hero-copy{padding:30px}}
+@media(max-width:720px){
+  .topbar{gap:12px}.topbar .breadcrumb{min-width:0;overflow:hidden;white-space:nowrap}.topbar .breadcrumb strong{overflow:hidden;text-overflow:ellipsis}.top-actions{flex-shrink:0}
+  .hero-copy{padding:25px 22px}.hero h1{font-size:36px}.hero-description{font-size:13px;line-height:1.75}.hero .eyebrow{line-height:1.7;font-size:8px}
+  .hero-actions{align-items:stretch;gap:10px}.hero-actions .primary,.hero-actions .secondary{flex:1 1 100%;font-size:12px;min-height:44px}.hero-library-link{padding:4px 0}
+  .hero-footnote{font-size:10px}body[data-view=overview] .tool-grid{grid-template-columns:1fr}.tool-card{min-height:190px}.tool-title{font-size:15px}.tool-summary{font-size:12px;line-height:1.7}.planned-label{font-size:8px}.card-bottom{font-size:10px}.section-heading h2{font-size:25px}
+  input,textarea,.select-trigger{font-size:14px;min-height:44px}.primary,.secondary{min-height:44px}.toast{left:18px;right:18px;bottom:18px;max-width:none}
+}
