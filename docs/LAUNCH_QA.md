@@ -11,24 +11,25 @@ This update improves the existing release 0.3. No production deployment, provide
 - Editor dialogs and asynchronous responses stay bound to their original account, project, revision and draft generation. Newer typing, recovered drafts and changes in another project survive delayed acknowledgements. Full browser storage and expired sessions retain an explicit local draft download.
 - Profiles, briefs, model catalogs, credit adjustments and admin tabs preserve current inputs and ignore stale responses. Earlier-session 401s do not sign out a recovered session. Quotes retain the exact model and credit snapshot shown for confirmation. Invalid role-map keys reach server validation instead of disappearing during serialization.
 - Overview highlights the two implemented coding workflows; the tool library keeps all 24 definitions and honest planned-engine labels. Mobile navigation, keyboard focus, touch targets, forms, spacing and restrained surfaces preserve the ND branding. Resolved errors clear on explicit retry. The static preview permits the same trusted Discord avatar host as the account deployment.
+- Live coding adds a separate unvalidated preview, OpenAI source streaming, DeepSeek complete-response candidates and a mobile preview shortcut. Saved revisions synchronize between tabs without replacing local drafts or resetting unchanged editor text. See [live coding behavior and upgrade notes](LIVE_CODING.md).
 
 ## Local verification
 
-Node 24.19.0, Python 3.12, Playwright 1.62.0 and system Chromium were used. The full 250-test Node suite and all 22 real local API browser journeys also passed on the minimum supported Node 22.16.0. Its 23 production assets are byte-identical to the Node 24 build. The CI workflow selects Node 22; local compatibility checks do not establish a hosted CI pass. No separate lint or type-check command is configured.
+Node 24.19.0, Python 3.12, Playwright 1.62.0 and system Chromium were used. The full 284-test Node suite and all 26 real local API browser journeys also passed on the minimum supported Node 22.16.0. Its 23 production assets are byte-identical to the Node 24 build. The CI workflow selects Node 22; local compatibility checks do not establish a hosted CI pass. No separate lint or type-check command is configured.
 
 | Check | Result |
 | --- | --- |
-| Node regression suite | 250 passed, zero failed or skipped |
+| Node regression suite | 284 passed, zero failed or skipped |
 | Account/brief Chromium fixtures | 24 passed |
-| Workspace Chromium fixtures | 37 passed |
+| Workspace Chromium fixtures | 51 passed |
 | Model/credit Chromium fixtures | 12 passed |
-| Real local HTTP/SQLite browser journeys | 22 passed |
+| Real local HTTP/SQLite browser journeys | 26 passed |
 | Production asset build | Passed |
 | Deployment shell syntax, browser Python syntax, workflow YAML, whitespace review | Passed |
 
 Browser journeys cover profile save/reload/export; brief creation, editing, deletion, ownership and lost acknowledgements; project/file creation, invalid paths, editing, conflicts, history, restore and ZIPs; successful builds, known-zero failure, concurrent source changes, cancellation and owner reconciliation; current-price reconfirmation, catalog persistence and internal credit adjustments; expired sessions, unavailable draft storage, permission denial, transient failure and retry; and desktop/tablet/mobile navigation. Representative widths include 320, 390, 834 and 1440 pixels. The fixture suites also check 768 and 1024 pixels. All four policy draft routes were inspected at mobile width.
 
-The launch runner starts the supported static preview and actual account/Studio API with a separate private temporary SQLite database for each journey. Discord identity/avatar images, AI output and rootless validation are explicit test doubles. Tests do not contact a paid provider or execute generated projects. HTTP/SQLite persistence, session/CSRF processing, job state and internal credit settlement are real local paths. These results do not establish live Discord access, provider authorization, provider billing, rootless enforcement or FiveM/Discord runtime behavior.
+The launch runner starts the supported static preview and actual account/Studio API with a separate private temporary SQLite database for each journey. Discord identity/avatar images, provider responses and rootless validation are explicit test doubles. Live-preview journeys use the production provider adapter, SSE decoder, partial JSON parser, worker publisher, API and browser with a mocked provider SSE transport. They verify changing previews before any saved revision or charge, finalization once, draft protection, tab synchronization, cursor/scroll preservation and mobile cancellation. Tests do not contact a paid provider or execute generated projects. HTTP/SQLite persistence, session/CSRF processing, job state and internal credit settlement are real local paths. These results do not establish live Discord access, provider authorization, provider billing, rootless enforcement or FiveM/Discord runtime behavior.
 
 The runner records page exceptions, console errors, failed requests, HTTP statuses, server logs and screenshots. Unexpected errors fail the checks. Deliberate 400/401/403/404/409/502/503 cases and verified browser download handoffs are distinguished from unexpected failures. See [browser setup and commands](BROWSER_TESTS.md). The verification workflow now runs all four browser suites and retains launch evidence.
 

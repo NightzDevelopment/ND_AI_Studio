@@ -12,6 +12,7 @@ Studio now includes private source projects, an owner control room, Discord role
 - Account search, suspension, session revocation, per-account daily build and spending limits, audit history and tool access switches.
 - Private project creation, brief-to-project setup, search, sorting, favorites and archival.
 - Custom file explorer, tabbed source editor, syntax highlighting, unsaved-change protection, keyboard shortcuts and revision conflicts.
+- Read-only live AI code previews and automatic saved-source updates between tabs, preserving local drafts and editor position. OpenAI streams source; DeepSeek candidates appear after its complete response. See [live coding behavior](docs/LIVE_CODING.md).
 - Create, edit, rename and delete source files; inspect historical versions, restore safely and export real ZIP files.
 - Desktop split-pane workspace and mobile Files/Editor/Build panels, using original HTML, modular JavaScript and custom CSS.
 

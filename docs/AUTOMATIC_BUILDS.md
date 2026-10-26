@@ -28,6 +28,8 @@ The worker prepares one result, stops lease progress heartbeats and delivers tha
 
 Polling fetches incoming saved source and updates the explorer/editor after completion without depending on the browser being open during generation. Reopening a project reads its latest saved revision.
 
+The [live code preview](LIVE_CODING.md) shows unvalidated candidate files separately during generation. Saved-source polling also detects manual edits from another tab, independently of build completion. Preview text never replaces saved source or local drafts before normal validation and finalization.
+
 Local drafts keep their original base content and revision. A generated edit or deletion does not silently replace that text. Conflicted drafts offer saved/local comparison and an explicit save or discard action. A file removed from saved source can still appear as a local draft for recovery. Unrelated changes do not require discarding a draft.
 
 Account/project-scoped `sessionStorage` recovery keeps drafts across reloads and navigation in the same browser tab. Saved or explicitly discarded drafts are removed. Closing the tab or clearing browser storage may remove recovery copies. Storage failures produce a warning and retain current in-memory text; keep a separate copy before closing or reloading if recovery storage is unavailable. This storage is a convenience, not an independent backup of project history.

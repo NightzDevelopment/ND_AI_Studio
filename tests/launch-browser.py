@@ -135,6 +135,8 @@ class LaunchJourneys(unittest.TestCase):
         self.page.locator('#new-file').click()
         self.page.locator('#file-form [name=path]').fill(path)
         self.page.locator('#file-form [type=submit]').click()
+        expect(self.page.locator('#file-dialog')).to_be_hidden()
+        expect(self.page.locator('#file-label')).to_have_text(path)
         self.page.locator('#code-editor').fill(content)
         self.page.locator('#save-file').click()
         expect(self.page.locator('#save-status')).to_contain_text('Saved revision')
@@ -705,6 +707,159 @@ class LaunchJourneys(unittest.TestCase):
         self.page.get_by_role('tab', name='Settings', exact=True).click()
         expect(self.page.locator('.role-row [name=role]')).to_have_value('100000000000000004')
         expect(self.page.locator('.role-row input[value="users:read"]')).to_be_checked()
+
+    def test_23_streamed_preview_changes_before_source_save_and_final_charge_happens_once(self):
+        project = self.project('QA live source preview')
+        before = self.api('/api/studio/credits')['data']['wallet']['balance']
+        self.build('[live] Stream the disclosed synthetic source fixture before final validation.')
+        preview = self.page.locator('#live-preview-code')
+        expect(preview).to_contain_text('RegisterCommand("nd_qatest"', timeout=15000)
+        first = preview.text_content()
+        self.assertEqual(preview.evaluate('node => node.tagName'), 'PRE')
+        self.assertFalse(preview.evaluate('node => node.isContentEditable'))
+        expect(self.page.locator('#live-preview-file')).to_have_value('client/main.lua')
+        expect(self.page.locator('#live-preview-state')).to_be_visible()
+        pending = self.api(f'/api/projects/{project}')['data']['project']
+        self.assertEqual(pending['version'], 1)
+        self.assertEqual(pending['files'], [])
+        self.assertEqual(self.api('/api/studio/credits')['data']['wallet']['balance'], before)
+        expect(preview).not_to_have_text(first, timeout=12000)
+        expect(preview).to_contain_text('print("QA fixture")', timeout=12000)
+        self.assertEqual(self.api(f'/api/projects/{project}')['data']['project']['version'], 1)
+        self.screenshot('live-preview-desktop.png')
+        expect(self.page.locator('#build-state')).to_have_text('Completed', timeout=25000)
+        saved = self.api(f'/api/projects/{project}')['data']['project']
+        self.assertEqual(saved['version'], 2)
+        self.assertEqual({file['path'] for file in saved['files']}, {'README.md', 'fxmanifest.lua', 'client/main.lua'})
+        self.assertIn('end, false)', next(file['content'] for file in saved['files'] if file['path'] == 'client/main.lua'))
+        jobs = self.api(f'/api/projects/{project}/jobs')['data']
+        self.assertEqual(jobs['projectVersion'], 2)
+        self.assertEqual(len(jobs['jobs']), 1)
+        self.assertEqual(jobs['jobs'][0]['previewVersion'], 0)
+        self.assertIsNone(self.api('/api/jobs/' + jobs['jobs'][0]['id'])['data']['job']['preview'])
+        expect(preview).to_have_text('')
+        self.assertEqual(self.api('/api/studio/credits')['data']['wallet']['balance'], before - 5)
+        self.page.reload()
+        expect(self.page.locator('#build-state')).to_have_text('Completed')
+        self.assertEqual(self.api(f'/api/projects/{project}')['data']['project']['version'], 2)
+        self.assertEqual(self.api('/api/studio/credits')['data']['wallet']['balance'], before - 5)
+
+    def test_24_live_preview_and_finished_build_preserve_unsaved_editor_drafts(self):
+        project = self.project('QA preview keeps a local source draft')
+        self.new_file()
+        base = self.api(f'/api/projects/{project}')['data']['project']
+        self.build('[live] Preview another file without replacing the selected manual source draft.')
+        draft = 'print("private unsaved draft during generation")'
+        self.page.locator('#code-editor').fill(draft)
+        expect(self.page.locator('#live-preview-code')).to_contain_text('RegisterCommand("nd_qatest"', timeout=15000)
+        expect(self.page.locator('#code-editor')).to_have_value(draft)
+        during = self.api(f'/api/projects/{project}')['data']['project']
+        self.assertEqual(during['version'], base['version'])
+        self.assertEqual(during['files'], base['files'])
+        expect(self.page.locator('#build-state')).to_have_text('Completed', timeout=25000)
+        expect(self.page.locator('#code-editor')).to_have_value(draft)
+        expect(self.page.locator('#draft-notice')).to_be_visible()
+        expect(self.page.locator('#save-file')).to_be_disabled()
+        saved = self.api(f'/api/projects/{project}')['data']['project']
+        self.assertEqual(saved['version'], base['version'] + 1)
+        self.assertNotIn(draft, '\n'.join(file['content'] for file in saved['files']))
+        expect(self.page.locator('#live-preview-code')).to_have_text('')
+        self.screenshot('live-preview-preserved-draft.png')
+
+    def test_25_saved_edits_sync_between_tabs_without_resetting_an_unchanged_editor(self):
+        project = self.project('QA saved source synchronizes between tabs')
+        stable_source = '\n'.join(f'print("unchanged line {index}")' for index in range(120)) + '\n'
+        self.new_file('client/unchanged.lua', stable_source)
+        self.new_file('README.md', 'Original saved notes.')
+        self.page.locator('#file-list').get_by_role('button', name='client/unchanged.lua', exact=True).click()
+        editor = self.page.locator('#code-editor')
+        expect(editor).to_have_value(stable_source)
+        editor.evaluate('node => { node.focus(); node.setSelectionRange(180, 180); node.scrollTop = 180; }')
+        before = editor.evaluate('node => ({start:node.selectionStart,end:node.selectionEnd,scroll:node.scrollTop})')
+        other = self.browser.new_context()
+        other_page = other.new_page()
+        try:
+            self.login('owner', other, other_page)
+            other_page.goto(self.origin + '/workspace.html#project/' + project)
+            expect(other_page.locator('#editor-view')).to_be_visible()
+            other_page.locator('#file-list').get_by_role('button', name='README.md', exact=True).click()
+            other_page.locator('#code-editor').fill('Saved notes changed in the second browser tab.')
+            other_page.locator('#save-file').click()
+            expect(other_page.locator('#save-status')).to_contain_text('Saved revision')
+            remote = self.api(f'/api/projects/{project}', page=other_page)['data']['project']
+            expect(self.page.locator('#project-meta')).to_contain_text('revision ' + str(remote['version']), timeout=15000)
+            expect(editor).to_have_value(stable_source)
+            self.assertEqual(editor.evaluate('node => ({start:node.selectionStart,end:node.selectionEnd,scroll:node.scrollTop})'), before)
+            self.assertEqual(self.api(f'/api/projects/{project}/jobs')['data']['jobs'], [])
+            self.page.locator('#sync-source').click()
+            expect(self.page.locator('#source-sync-status')).to_be_visible()
+            expect(editor).to_have_value(stable_source)
+            draft = 'print("keep the unsaved local tab draft")'
+            editor.fill(draft)
+            other_page.locator('#file-list').get_by_role('button', name='client/unchanged.lua', exact=True).click()
+            other_page.locator('#code-editor').fill('print("new saved content from the second tab")')
+            other_page.locator('#save-file').click()
+            expect(other_page.locator('#save-status')).to_contain_text('Saved revision')
+            remote = self.api(f'/api/projects/{project}', page=other_page)['data']['project']
+            expect(self.page.locator('#project-meta')).to_contain_text('revision ' + str(remote['version']), timeout=15000)
+            expect(editor).to_have_value(draft)
+            expect(self.page.locator('#draft-notice')).to_be_visible()
+            expect(self.page.locator('#save-file')).to_be_disabled()
+            self.assertNotIn(draft, '\n'.join(file['content'] for file in remote['files']))
+            self.screenshot('saved-source-sync-keeps-draft.png')
+        finally:
+            other.close()
+
+    def test_26_mobile_live_preview_cancellation_and_navigation_never_save_partial_source(self):
+        project = self.project('QA mobile preview cancellation')
+        before = self.api('/api/studio/credits')['data']['wallet']['balance']
+        self.page.set_viewport_size({'width': 390, 'height': 844})
+        self.page.locator('button[data-panel=build]').click()
+        self.build('[live] Exercise a local synthetic streaming preview before cancelling it.')
+        preview = self.page.locator('#live-preview-code')
+        expect(preview).to_contain_text('RegisterCommand("nd_qatest"', timeout=15000)
+        route = self.page.url
+        self.page.locator('#view-live-preview').click()
+        expect(preview).to_be_focused()
+        self.assertEqual(self.page.url, route)
+        self.assertGreater(self.page.evaluate('window.scrollY'), 0)
+        self.assertLessEqual(self.page.evaluate('document.documentElement.scrollWidth'), 390)
+        box = self.page.locator('#live-preview').bounding_box()
+        self.assertGreaterEqual(box['x'], -1)
+        self.assertLessEqual(box['x'] + box['width'], 391)
+        self.screenshot('live-preview-mobile.png')
+        self.page.locator('#cancel-build').click()
+        self.page.get_by_role('dialog').filter(has_text='Cancel this build?').get_by_role('button', name='Cancel build', exact=True).click()
+        expect(self.page.locator('#build-state')).to_have_text('cancelled')
+        expect(preview).to_have_text('')
+        jobs = self.api(f'/api/projects/{project}/jobs')['data']['jobs']
+        self.assertEqual(len(jobs), 1)
+        self.assertIsNone(self.api('/api/jobs/' + jobs[0]['id'])['data']['job']['preview'])
+        self.page.goto(self.origin + '/workspace.html#projects')
+        expect(self.page.locator('#dashboard')).to_be_visible()
+        self.page.locator('#new-project').click()
+        self.page.locator('#project-form [name=name]').fill('QA destination after cancelled preview')
+        self.page.locator('#project-form [name=requirements]').fill('A different private source project with no generated files.')
+        self.page.locator('#project-form [type=submit]').click()
+        expect(self.page.locator('#editor-view')).to_be_visible()
+        destination = self.page.url.split('#project/')[1]
+        self.assertNotEqual(destination, project)
+        expect(self.page.locator('#live-preview-code')).to_have_text('')
+        expect(self.page.locator('#build-state')).to_have_text('Idle')
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            records = [json.loads(line) for line in Path(self.metadata['log']).read_text().splitlines()]
+            if any(record['path'] == '/api/worker/complete' for record in records):
+                break
+            time.sleep(.2)
+        else:
+            self.fail('The cancelled fixture worker did not finish within its bounded streaming delay.')
+        self.assertEqual(self.api(f'/api/projects/{project}')['data']['project']['version'], 1)
+        self.assertEqual(self.api(f'/api/projects/{project}')['data']['project']['files'], [])
+        self.assertEqual(self.api(f'/api/projects/{destination}')['data']['project']['version'], 1)
+        self.assertEqual(self.api(f'/api/projects/{destination}')['data']['project']['files'], [])
+        expect(self.page.locator('#live-preview-code')).to_have_text('')
+        self.assertEqual(self.api('/api/studio/credits')['data']['wallet']['balance'], before)
 
 
 if __name__ == '__main__':
