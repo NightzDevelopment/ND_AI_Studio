@@ -2,9 +2,9 @@ import { refreshSelects, confirmAction } from './controls.js';
 import { createModelControls } from './models.js';
 import { SourceDrafts, draftStorageKey } from './workspace-drafts.js';
 const $=id=>document.getElementById(id);
-const state={ session:null, capabilities:null, catalog:null, projects:[], project:null, selected:null, tabs:[], drafts:new SourceDrafts(), jobs:[], job:null, briefList:[], editingProject:false, fileMode:'new', managedUser:null, adminTab:null, settings:null, review:null, route:location.hash || '#projects', pollBusy:false, capabilitiesAt:0, buildSubmitting:false, draftStorageFailed:false, draftRecovery:null, sourceJobsAt:'', projectDialog:null, fileDialog:null, sourceWrites:new Set(), selectedJobId:null, draftOwnerId:null, blockedDraftKeys:new Set(), initialized:false };
+const state={ session:null, capabilities:null, catalog:null, projects:[], project:null, selected:null, tabs:[], drafts:new SourceDrafts(), jobs:[], job:null, briefList:[], editingProject:false, fileMode:'new', managedUser:null, adminTab:null, settings:null, review:null, route:location.hash || '#projects', pollBusy:false, capabilitiesAt:0, buildSubmitting:false, draftStorageFailed:false, draftRecovery:null, sourceJobsAt:'', projectDialog:null, fileDialog:null, sourceWrites:new Set(), selectedJobId:null, draftOwnerId:null, blockedDraftKeys:new Set(), initialized:false, previewFile:null, previewJobId:null, previewSignature:'', syncUnavailable:false, lastSyncError:null };
 let toastTimer, routeSequence=0, highlightFrame=0;
-let pendingBuildRequest=null, jobsRequestSequence=0, jobSelectionSequence=0, adminViewSequence=0, userSearchSequence=0, rescueUrl=null;
+let pendingBuildRequest=null, jobsRequestSequence=0, jobSelectionSequence=0, adminViewSequence=0, userSearchSequence=0, jobDetailSequence=0, jobsLoad=null, idlePollTick=false, rescueUrl=null;
 const models=createModelControls({api,el,button,field,selectField,table,notice,confirmAction,reasonDialog,getUserId:()=>state.session?.user?.id||null,onChange:renderBuilds});
 function el(tag,className,text) { const node=document.createElement(tag);if(className)node.className=className;if(text!==undefined)node.textContent=text;return node; }
 function button(label,action,className='') { const node=el('button',className,label);node.type='button';node.addEventListener('click',()=>task(node,action));return node; }
@@ -64,7 +64,7 @@ const money=value=>`$${(value/1000000).toFixed(4)}`;
 const time=value=>new Date(value).toLocaleString();
 function dirty(){return state.drafts.size>0;}
 function panel(name){$('workbench').dataset.panel=name;document.querySelectorAll('[data-panel]').forEach(node=>{if(node.tagName==='BUTTON')node.setAttribute('aria-pressed',String(node.dataset.panel===name));});}
-function show(name){for(const id of ['loading','login','route-error','dashboard','editor-view','admin-view'])$(id).hidden=id!==name;}
+function show(name){if(name!=='editor-view')clearLivePreview();for(const id of ['loading','login','route-error','dashboard','editor-view','admin-view'])$(id).hidden=id!==name;}
 function toolName(id){return state.catalog?.tools.find(tool=>tool.id===id)?.name || id;}
 function formError(form,message){const target=form.querySelector('.form-error');target.textContent=message;target.hidden=!message;}
 async function submit(form,action){
@@ -146,9 +146,14 @@ function renderEditor(){
   if(!p.files.length&&!dirty())$('file-list').append(el('p','panel-note','No source files yet.'));
   $('file-tabs').replaceChildren(...state.tabs.map(path=>{const tab=el('div','file-tab'),select=button(`${state.drafts.has(path)?'* ':''}${path}`,()=>selectFile(path));select.setAttribute('role','tab');select.setAttribute('aria-selected',String(path===state.selected));const close=button('×',()=>closeTab(path),'close-tab');close.setAttribute('aria-label',`Close ${path}`);tab.append(select,close);return tab;}));
   $('code-empty').hidden=Boolean(state.selected);$('code-wrap').hidden=!state.selected;$('file-label').textContent=state.selected || 'Choose a file';
-  if(state.selected){$('code-editor').value=state.drafts.get(state.selected)??p.files.find(file=>file.path===state.selected)?.content??'';highlight();}
+  if(state.selected){
+    const editor=$('code-editor'),content=state.drafts.get(state.selected)??p.files.find(file=>file.path===state.selected)?.content??'';
+    const unchanged=editor.dataset.projectId===p.id&&editor.dataset.path===state.selected&&editor.value===content;
+    if(!unchanged){editor.value=content;editor.dataset.projectId=p.id;editor.dataset.path=state.selected;highlight();}
+  }
   updateFileActions();
   $('code-editor').readOnly=Boolean(p.archived);updateSaveState();renderBuilds();
+  const sync=$('source-sync-status');if(sync.dataset.projectId!==p.id||sync.dataset.version!==String(p.version)){sync.dataset.projectId=p.id;sync.dataset.version=String(p.version);syncStatus(`Saved source loaded / revision ${p.version}.`);}
 }
 function selectFile(path){state.selected=path;if(!state.tabs.includes(path))state.tabs.push(path);persistDrafts();renderEditor();panel('editor');}
 async function closeTab(path){
@@ -275,7 +280,13 @@ $('history-button').addEventListener('click',()=>task($('history-button'),async(
 }));
 function acceptJob(job){
   const current=state.job;
-  if(current?.id===job.id&&(current.updatedAt>job.updatedAt||!['queued','running'].includes(current.status)&&['queued','running'].includes(job.status)))return;
+  if(current?.id===job.id){
+    const wasActive=['queued','running'].includes(current.status),active=['queued','running'].includes(job.status);
+    if(!wasActive&&active)return;
+    if(wasActive&&!active){state.job=job;return;}
+    if(current.status==='applied'&&job.status!=='applied')return;
+    if(current.updatedAt>job.updatedAt||current.status==='running'&&job.status==='running'&&previewVersion(job)>0&&previewVersion(job)<previewVersion(current))return;
+  }
   state.job=job;
 }
 function renderBuilds(){
@@ -285,47 +296,103 @@ function renderBuilds(){
   models.render(active||state.buildSubmitting);
   $('build-history').replaceChildren(...state.jobs.map(job=>{const node=button(`${job.status.toUpperCase()} / ${job.modelLabel || job.model || 'Model'} / ${new Date(job.createdAt).toLocaleTimeString()}`,()=>selectJob(job.id));node.classList.toggle('active',state.job?.id===job.id);return node;}));
   $('build-state').textContent=state.job?.status==='applied'?'Completed':state.job?.status || 'Idle';$('cancel-build').hidden=!state.job||!['queued','running'].includes(state.job.status);$('review-button').hidden=!state.job?.result?.files;$('download-build').hidden=!state.job?.result?.files;if(state.job?.result?.files)$('download-build').href=`/api/jobs/${state.job.id}/export`;
-  if(!state.job){$('build-log').replaceChildren(el('p','','No build selected. Logs appear when a worker performs real steps.'));return;}
+  if(!state.job){$('build-log').replaceChildren(el('p','','No build selected. Logs appear when a worker performs real steps.'));renderLivePreview();return;}
   const nodes=state.job.events.map(event=>{const p=el('p');p.append(el('strong','',`${new Date(event.createdAt).toLocaleTimeString()} [${event.stage}] `),document.createTextNode(event.message));return p;});
   if(state.job.result?.checks)for(const check of state.job.result.checks)nodes.push(el('p','',check));
   if(state.job.result?.error)nodes.push(el('p','danger',state.job.result.error));
   if(state.job.applicationError)nodes.push(el('p','danger',`${state.job.applicationError} Finished output is preserved. Download the build ZIP or compare its files with your saved source.`));
   if(state.job.appliedVersion)nodes.push(el('p','',`Saved as project revision ${state.job.appliedVersion}. History, comparison and ZIP remain available.`));
   nodes.push(el('p','',`Model: ${state.job.modelLabel || state.job.model || 'Original configured model'}. API cost estimate: ${money(state.job.costMicros)} / reservation: ${money(state.job.reservedMicros)}. Provider invoices may differ. Studio credits: ${state.job.credits?.amount ?? 0} / ${state.job.credits?.state || 'not-used'}. Pending credits are holds, not finalized charges.`));
-  $('build-log').replaceChildren(...nodes);
+  $('build-log').replaceChildren(...nodes);renderLivePreview();
 }
+const previewVersion=job=>Number.isSafeInteger(job?.previewVersion)?job.previewVersion:Number.isSafeInteger(job?.preview?.sequence)?job.preview.sequence:0;
+function syncStatus(message){const node=$('source-sync-status');if(node.textContent!==message)node.textContent=message;}
+function clearLivePreview(){
+  state.previewFile=null;state.previewJobId=null;state.previewSignature='';
+  $('view-live-preview').hidden=true;$('live-preview').hidden=true;$('live-preview-code').textContent='';$('live-preview-code').hidden=true;
+  $('live-preview-file').replaceChildren(new Option('No preview files yet',''));$('live-preview-file').disabled=true;
+  $('live-preview-file-state').textContent='';
+}
+function renderLivePreview(){
+  const job=state.job;
+  if(!state.project||$('editor-view').hidden||!job||job.projectId!==state.project.id||!['queued','running'].includes(job.status)||state.project.archived){clearLivePreview();return;}
+  if(state.previewJobId!==job.id){state.previewFile=null;state.previewSignature='';state.previewJobId=job.id;}
+  $('view-live-preview').hidden=false;$('live-preview').hidden=false;
+  const preview=job.status==='running'?job.preview:null;
+  const changes=Array.isArray(preview?.changes)?preview.changes.filter(change=>typeof change?.path==='string'&&(typeof change.content==='string'||change.content===null)&&typeof change.complete==='boolean'):[];
+  const attempt=[1,2].includes(preview?.attempt)?`Attempt ${preview.attempt} / `:'';
+  $('live-preview-state').textContent=!navigator.onLine?'Offline / last received preview':state.syncUnavailable?'Updates unavailable / last received preview':job.status==='queued'?'Queued / waiting for worker':changes.length?`${attempt}Unvalidated preview`:`${attempt}Waiting for code`;
+  $('live-preview-detail').textContent=`Based on revision ${job.baseVersion}. ${job.provider==='deepseek'?'This provider returns code together. It appears here when available.':'Code appears only when the worker receives it. Preview availability depends on the worker and provider.'}`;
+  const options=changes.map(change=>({value:change.path,label:change.path+(change.content===null?' / deletion proposed':'')}));
+  const signature=JSON.stringify(options);
+  const picker=$('live-preview-file');
+  if(options.length&&!options.some(option=>option.value===state.previewFile))state.previewFile=options[0].value;
+  if(signature!==state.previewSignature){
+    picker.replaceChildren(...(options.length?options.map(option=>new Option(option.label,option.value)):[new Option('No preview files yet','')]));
+    picker.disabled=!options.length;picker.value=options.length?state.previewFile:'';state.previewSignature=signature;refreshSelects($('live-preview'));
+  }
+  const selected=changes.find(change=>change.path===state.previewFile),code=$('live-preview-code');
+  code.hidden=!selected;
+  const content=selected?(selected.content===null?'Deletion proposed. The saved file has not been removed.':selected.content):'';
+  if(code.textContent!==content)code.textContent=content;
+  $('live-preview-file-state').textContent=selected?(selected.content===null?'Proposed deletion / unvalidated and not applied.':selected.complete?'File text received / validation pending.':'Partial file text / still being received, unvalidated and not saved.'):'No code has been received for this build yet.';
+}
+$('live-preview-file').addEventListener('change',()=>{state.previewFile=$('live-preview-file').value;renderLivePreview();});
+$('view-live-preview').addEventListener('click',()=>task($('view-live-preview'),()=>{
+  renderLivePreview();if($('live-preview').hidden)return;
+  $('live-preview').scrollIntoView({behavior:'auto',block:'start'});
+  ($('live-preview-code').hidden?$('live-preview-title'):$('live-preview-code')).focus({preventScroll:true});
+}));
 async function selectJob(id){
   const context=workspaceContext(),selection=++jobSelectionSequence;state.selectedJobId=id;
   try{
-    const {job}=await api(`/api/jobs/${id}`);
-    if(!contextCurrent(context)||selection!==jobSelectionSequence||job.projectId!==context.projectId)return;
+    const detail=++jobDetailSequence,{job}=await api(`/api/jobs/${id}`);
+    if(!contextCurrent(context)||detail!==jobDetailSequence||selection!==jobSelectionSequence||job.projectId!==context.projectId)return;
     acceptJob(job);renderBuilds();
   }catch(failure){if(contextCurrent(context)&&selection===jobSelectionSequence)state.selectedJobId=state.job?.id||null;throw failure;}
 }
-async function loadJobs(){
-  if(!state.project||$('editor-view').hidden)return;
-  const context=workspaceContext(),id=context.projectId,sequence=routeSequence,request=++jobsRequestSequence,selection=jobSelectionSequence;
-  const [{jobs},capabilities]=await Promise.all([api(`/api/projects/${id}/jobs`),Date.now()-state.capabilitiesAt>15000?api('/api/studio/session'):null]);
+async function loadJobs({fresh=false}={}){
+  if(!state.project||$('editor-view').hidden||!state.session?.user)return;
+  const context=workspaceContext(),key=`${context.userId}:${context.projectId}:${context.sequence}`;
+  if(jobsLoad?.key===key){
+    const pending=jobsLoad.promise;
+    if(!fresh)return pending;
+    try{await pending;}catch{}
+    if(contextCurrent(context))return loadJobs({fresh:true});return;
+  }
+  const entry={key,promise:null};entry.promise=readJobs(context,fresh);jobsLoad=entry;
+  try{return await entry.promise;}
+  catch(failure){if(contextCurrent(context)){state.syncUnavailable=true;state.lastSyncError=failure.message;syncStatus('Updates could not be checked. Local drafts are preserved. Use Check for updates to retry.');renderLivePreview();}throw failure;}
+  finally{if(jobsLoad===entry)jobsLoad=null;}
+}
+async function readJobs(context,checkSource=false){
+  const id=context.projectId,sequence=routeSequence,request=++jobsRequestSequence,selection=jobSelectionSequence;
+  const [{jobs,projectVersion,projectUpdatedAt},capabilities]=await Promise.all([api(`/api/projects/${id}/jobs`),Date.now()-state.capabilitiesAt>15000?api('/api/studio/session'):null]);
   if(!contextCurrent(context)||sequence!==routeSequence||request!==jobsRequestSequence)return;
   if(capabilities){state.capabilities=capabilities;state.capabilitiesAt=Date.now();}
   const selected=state.selectedJobId||state.job?.id, summary=jobs.find(job=>job.id===selected)||jobs[0]||null;state.jobs=jobs;
   if(!summary&&selection===jobSelectionSequence)state.job=null;
-  else if(summary&&selection===jobSelectionSequence&&(!state.job||state.job.id!==summary.id||state.job.updatedAt!==summary.updatedAt||state.job.status!==summary.status||state.job.credits?.state!==summary.credits?.state)){
-    const {job}=await api(`/api/jobs/${summary.id}`);if(!contextCurrent(context)||sequence!==routeSequence||request!==jobsRequestSequence)return;if(selection===jobSelectionSequence&&job.projectId===id)acceptJob(job);
+  else if(summary&&selection===jobSelectionSequence&&(!state.job||state.job.id!==summary.id||state.job.updatedAt!==summary.updatedAt||state.job.status!==summary.status||state.job.credits?.state!==summary.credits?.state||previewVersion(state.job)!==previewVersion(summary))){
+    const detail=++jobDetailSequence,{job}=await api(`/api/jobs/${summary.id}`);if(!contextCurrent(context)||sequence!==routeSequence||request!==jobsRequestSequence)return;if(detail===jobDetailSequence&&selection===jobSelectionSequence&&job.projectId===id)acceptJob(job);
   }
   const appliedVersion=Math.max(0,...jobs.map(job=>job.appliedVersion||0)),sourceStamp=jobs.filter(job=>job.status==='applied'||job.applicationError).map(job=>`${job.id}:${job.updatedAt}:${job.appliedVersion||''}`).join('|');
-  if(appliedVersion>state.project.version||(sourceStamp!==state.sourceJobsAt&&jobs.some(job=>job.applicationError))){
+  const remoteVersion=Math.max(appliedVersion,Number.isSafeInteger(projectVersion)?projectVersion:0);
+  if(checkSource||remoteVersion>state.project.version||(sourceStamp!==state.sourceJobsAt&&jobs.some(job=>job.applicationError))){
     const previousVersion=state.project.version,{project}=await api(`/api/projects/${id}`);
     if(!contextCurrent(context)||sequence!==routeSequence||request!==jobsRequestSequence)return;
-    if(project.version>=state.project.version&&project.version>=appliedVersion){
-      const hadDrafts=dirty();setProject(project,true);renderEditor();
+    if(project.version>=state.project.version&&project.version>=remoteVersion){
+      const hadDrafts=dirty();if(project.version>state.project.version){setProject(project,true);persistDrafts();renderEditor();}
       if(project.version>previousVersion)notice(hadDrafts?'Saved source refreshed. Your unsaved drafts are preserved; changed files need comparison before saving.':'Saved source refreshed. The explorer and editor now show the latest revision.');
     }
   }
-  state.sourceJobsAt=sourceStamp;
+  state.sourceJobsAt=sourceStamp;state.syncUnavailable=false;
+  if(state.lastSyncError&&$('error').textContent===state.lastSyncError)$('error').hidden=true;state.lastSyncError=null;
+  syncStatus(Number.isSafeInteger(projectVersion)||checkSource?`Saved source synced / revision ${state.project.version}.${dirty()?' Local drafts are preserved.':''}`:`Saved source loaded / revision ${state.project.version}. Use Check for updates to reload saved files.`);
+  if(projectUpdatedAt)$('source-sync-status').title=`Server update: ${projectUpdatedAt}`;
   await models.refresh();
   if(contextCurrent(context)&&request===jobsRequestSequence)renderBuilds();
 }
+$('sync-source').addEventListener('click',()=>task($('sync-source'),()=>loadJobs({fresh:true})));
 $('build-form').addEventListener('submit',event=>{event.preventDefault();task($('generate-button'),async()=>{
   if(state.buildSubmitting)return;
   state.buildSubmitting=true;
@@ -457,5 +524,10 @@ $('new-project').addEventListener('click',()=>task($('new-project'),()=>openProj
 $('project-search').addEventListener('input',renderProjects);$('project-filter').addEventListener('change',renderProjects);$('project-sort').addEventListener('change',renderProjects);
 for(const node of document.querySelectorAll('[data-close]'))node.addEventListener('click',()=>node.closest('dialog').close());
 for(const node of document.querySelectorAll('button[data-panel]'))node.addEventListener('click',()=>panel(node.dataset.panel));
-setInterval(async()=>{if(document.hidden||state.pollBusy||!state.project||$('editor-view').hidden)return;state.pollBusy=true;try{await loadJobs();}catch(failure){error(failure.message);}finally{state.pollBusy=false;}},4000);
+setInterval(async()=>{
+  if(document.hidden||state.pollBusy||!state.project||$('editor-view').hidden||!state.session?.user||!navigator.onLine)return;
+  const active=state.jobs.some(job=>['queued','running'].includes(job.status));idlePollTick=active?false:!idlePollTick;if(!active&&idlePollTick)return;
+  state.pollBusy=true;try{await loadJobs();}catch(failure){error(failure.message);}finally{state.pollBusy=false;}
+},2000);
+window.addEventListener('offline',()=>{syncStatus('Offline. Showing the last saved source and local drafts.');renderLivePreview();});
 await initializeWorkspace();

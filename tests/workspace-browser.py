@@ -64,6 +64,14 @@ class Fixture:
         self.other_project = dict(id=OTHER_PROJECT, name='Other project', tool_id='ai-script-generator', target='Standalone', requirements='Other source', version=1, archived=False, files=[{'path':'client/main.lua','content':'return 900'}], updated_at='2026-01-01T00:00:00.000Z')
         self.expired = False
         self.fail_reads = {}
+        self.unauthorized_once = set()
+        self.include_jobs = True
+        self.delay_job_detail = False
+        self.detail_requested = threading.Event()
+        self.release_detail = threading.Event()
+        self.detail_reads = 0
+        self.jobs_reads_active = 0
+        self.max_jobs_reads_active = 0
         self.delay_project = False
         self.delay_save = False
         self.delay_save_reply = False
@@ -76,7 +84,7 @@ class Fixture:
                         applicationMode='automatic', appliedVersion=None, applicationError=None,
                         events=[], result=None, createdAt='2026-01-01T00:00:00.000Z',
                         updatedAt='2026-01-01T00:00:00.000Z', costMicros=0, reservedMicros=500000,
-                        model='fixture-model', modelLabel='Fixture model', credits={'amount': 0, 'state': 'not-used'})
+                        model='fixture-model', modelLabel='Fixture model', credits={'amount': 0, 'state': 'not-used'}, preview=None, previewVersion=0)
         fixture = self
 
         class Handler(SimpleHTTPRequestHandler):
@@ -92,11 +100,33 @@ class Fixture:
                 self.send_header('Content-Type', 'application/json')
                 self.send_header('Content-Length', str(len(raw)))
                 self.end_headers()
-                self.wfile.write(raw)
+                try:
+                    self.wfile.write(raw)
+                finally:
+                    if getattr(self,'counted_jobs',False):
+                        fixture.jobs_reads_active-=1;self.counted_jobs=False
 
             def do_GET(self):
                 parsed = urlparse(self.path)
                 path = parsed.path
+                self.counted_jobs=False
+                if path.endswith('/jobs'):
+                    fixture.jobs_reads_active+=1;self.counted_jobs=True
+                    fixture.max_jobs_reads_active=max(fixture.max_jobs_reads_active,fixture.jobs_reads_active)
+                if path in fixture.unauthorized_once:
+                    fixture.unauthorized_once.remove(path)
+                    pending=fixture.delayed_reads.pop(path,None)
+                    if pending:
+                        pending[0].set();pending[1].wait(timeout=10)
+                    return self.send_json({'error':'An earlier session expired.'},401)
+                if path == f'/api/jobs/{JOB}':
+                    fixture.detail_reads+=1
+                    if fixture.delay_job_detail:
+                        fixture.delay_job_detail=False
+                        with fixture.lock:
+                            saved_detail=copy.deepcopy(fixture.job)
+                        fixture.detail_requested.set();fixture.release_detail.wait(timeout=10)
+                        return self.send_json({'job':saved_detail})
                 pending_read=fixture.delayed_reads.pop(path,None)
                 if pending_read:
                     pending_read[0].set()
@@ -115,7 +145,7 @@ class Fixture:
                     if path == f'/api/projects/{OTHER_PROJECT}':
                         return self.send_json({'project':fixture.other_project})
                     if path == f'/api/projects/{OTHER_PROJECT}/jobs':
-                        return self.send_json({'jobs':[]})
+                        return self.send_json({'jobs':[],'projectVersion':fixture.other_project['version'],'projectUpdatedAt':fixture.other_project['updated_at']})
                     if path == '/api/briefs':
                         return self.send_json({'briefs':[]})
                     if path == '/api/session':
@@ -127,7 +157,7 @@ class Fixture:
                     if path == f'/api/projects/{PROJECT}':
                         return self.send_json({'project': fixture.project()})
                     if path == f'/api/projects/{PROJECT}/jobs':
-                        return self.send_json({'jobs': [fixture.job]})
+                        return self.send_json({'jobs': [fixture.job] if fixture.include_jobs else [],'projectVersion':fixture.version,'projectUpdatedAt':fixture.project()['updated_at']})
                     if path == f'/api/jobs/{JOB}':
                         return self.send_json({'job': fixture.job})
                     if path == f'/api/projects/{PROJECT}/revisions':
@@ -228,12 +258,16 @@ class Fixture:
                     requirements='Fixture source', version=version, archived=self.archived,
                     files=copy.deepcopy(self.revisions[version]), updated_at='2026-01-01T00:00:00.000Z')
 
+    def publish_preview(self,sequence,changes,attempt=1):
+        with self.lock:
+            self.job.update(previewVersion=sequence,preview={'sequence':sequence,'attempt':attempt,'changes':copy.deepcopy(changes)})
+
     def complete(self, files):
         with self.lock:
             self.files = copy.deepcopy(files)
             self.version += 1
             self.revisions[self.version] = copy.deepcopy(files)
-            self.job.update(status='applied', appliedVersion=self.version,
+            self.job.update(status='applied', appliedVersion=self.version, preview=None, previewVersion=0,
                             result={'files': files, 'summary': 'Validated fixture output', 'checks': ['Fixture syntax passed.']},
                             updatedAt='2026-01-01T00:00:01.000Z')
 
@@ -241,6 +275,7 @@ class Fixture:
         self.release_project.set()
         self.release_save.set()
         self.release_create.set()
+        self.release_detail.set()
         self.server.shutdown()
         self.server.server_close()
         self.thread.join(timeout=3)
@@ -274,7 +309,7 @@ class WorkspaceBrowserTests(unittest.TestCase):
         self.fixture = Fixture()
         self.context = self.browser.new_context()
         self.page = self.context.new_page()
-        self.page.add_init_script('const originalInterval=window.setInterval; window.setInterval=(fn,ms,...args)=>originalInterval(fn,ms===4000?80:ms,...args);')
+        self.page.add_init_script('const originalInterval=window.setInterval; window.setInterval=(fn,ms,...args)=>originalInterval(fn,(ms===4000||ms===2000)?80:ms,...args);')
         self.errors = []
         self.page.on('pageerror', lambda error: self.errors.append(str(error)))
 
@@ -286,6 +321,230 @@ class WorkspaceBrowserTests(unittest.TestCase):
     def open(self):
         self.page.goto(self.fixture.url)
         expect(self.page.locator('#editor-view')).to_be_visible()
+
+    def test_current_session_expiry_clears_ephemeral_preview_and_preserves_source_drafts(self):
+        self.open()
+        self.page.locator('#code-editor').fill('return 991 -- keep local source after expiry')
+        self.fixture.publish_preview(1,[{'path':'client/main.lua','content':'ephemeral unvalidated candidate','complete':False}])
+        expect(self.page.locator('#live-preview-code')).to_have_text('ephemeral unvalidated candidate')
+        self.fixture.expired=True
+        self.page.evaluate("document.dispatchEvent(new Event('visibilitychange'))")
+        expect(self.page.locator('#login')).to_be_visible()
+        expect(self.page.locator('#live-preview')).to_be_hidden()
+        expect(self.page.locator('#live-preview-code')).to_have_text('')
+        raw=self.page.evaluate("sessionStorage.getItem('ndai:source-drafts:"+USER+':'+PROJECT+"')")
+        self.assertIn('return 991 -- keep local source after expiry',raw)
+        expect(self.page.locator('#recover-expired-drafts')).to_be_visible()
+
+    def test_stale_earlier_account_unauthorized_response_does_not_clear_current_preview(self):
+        requested,released=threading.Event(),threading.Event()
+        self.fixture.delayed_reads['/api/studio/models']=(requested,released)
+        self.fixture.unauthorized_once.add('/api/studio/models')
+        self.fixture.publish_preview(1,[{'path':'client/main.lua','content':'preview in the recovered account','complete':False}])
+        self.page.goto(self.fixture.url)
+        self.assertTrue(requested.wait(timeout=5))
+        self.fixture.user_id='55555555-5555-4555-8555-555555555555'
+        self.fixture.csrf='recovered-account-csrf'
+        self.page.evaluate("window.dispatchEvent(new Event('online'))")
+        expect(self.page.locator('#editor-view')).to_be_visible()
+        expect(self.page.locator('#live-preview-code')).to_have_text('preview in the recovered account')
+        released.set()
+        self.page.wait_for_timeout(100)
+        expect(self.page.locator('#login')).to_be_hidden()
+        expect(self.page.locator('#live-preview-code')).to_have_text('preview in the recovered account')
+        expect(self.page.locator('#error')).to_be_hidden()
+
+    def test_live_chunks_refresh_on_preview_version_without_changing_saved_source_or_drafts(self):
+        self.open()
+        self.page.locator('#code-editor').fill('return 777 -- private browser draft')
+        initial_stamp=self.fixture.job['updatedAt']
+        self.fixture.publish_preview(1,[{'path':'client/main.lua','content':'local command = "','complete':False}])
+        expect(self.page.locator('#live-preview-code')).to_have_text('local command = "')
+        expect(self.page.locator('#live-preview-state')).to_contain_text('Attempt 1')
+        expect(self.page.locator('#live-preview-detail')).to_contain_text('Based on revision 1')
+        expect(self.page.locator('#code-editor')).to_have_value('return 777 -- private browser draft')
+        self.assertEqual(self.fixture.version,1)
+        self.assertEqual(self.fixture.saves,0)
+        self.fixture.publish_preview(2,[{'path':'client/main.lua','content':'local command = "hello"\nprint(command)','complete':True}])
+        expect(self.page.locator('#live-preview-code')).to_have_text('local command = "hello"\nprint(command)')
+        expect(self.page.locator('#live-preview-file-state')).to_contain_text('validation pending')
+        self.assertEqual(self.fixture.job['updatedAt'],initial_stamp)
+        self.assertEqual(self.fixture.saves,0)
+        self.assertEqual(self.fixture.applies,0)
+
+    def test_preview_file_selection_survives_added_files_and_attempt_replacement_clears_old_source(self):
+        self.open()
+        self.fixture.publish_preview(1,[{'path':'client/main.lua','content':'first preview','complete':False}])
+        expect(self.page.locator('#live-preview-code')).to_have_text('first preview')
+        self.fixture.publish_preview(2,[{'path':'README.md','content':'new file first in ordering','complete':True},{'path':'client/main.lua','content':'same selected path updated','complete':True}])
+        expect(self.page.locator('#live-preview-code')).to_have_text('same selected path updated')
+        expect(self.page.locator('#live-preview-file')).to_have_value('client/main.lua')
+        self.fixture.publish_preview(3,[{'path':'server/repaired.lua','content':'repair attempt source','complete':False}],attempt=2)
+        expect(self.page.locator('#live-preview-code')).to_have_text('repair attempt source')
+        expect(self.page.locator('#live-preview-state')).to_contain_text('Attempt 2')
+        self.assertNotIn('client/main.lua',self.page.locator('#live-preview-file').evaluate('(node)=>[...node.options].map(option=>option.value)'))
+
+    def test_preview_uses_text_nodes_and_marks_proposed_deletions_without_touching_editor(self):
+        self.open()
+        payload='<script>window.previewExecuted=true</script>\nlocal sample = "<b>plain text</b>"'
+        self.fixture.publish_preview(1,[{'path':'client/main.lua','content':payload,'complete':False}])
+        expect(self.page.locator('#live-preview-code')).to_have_text(payload)
+        self.assertEqual(self.page.locator('#live-preview-code script').count(),0)
+        self.assertIsNone(self.page.evaluate('window.previewExecuted'))
+        self.fixture.publish_preview(2,[{'path':'client/main.lua','content':None,'complete':True}])
+        expect(self.page.locator('#live-preview-code')).to_contain_text('Deletion proposed')
+        expect(self.page.locator('#live-preview-file-state')).to_contain_text('not applied')
+        expect(self.page.locator('#code-editor')).to_have_value('return 1')
+        self.assertEqual(self.fixture.files[0]['path'],'client/main.lua')
+
+    def test_new_authoritative_mask_clears_running_preview_and_old_zero_response_cannot_erase_new_code(self):
+        self.open()
+        self.fixture.delay_job_detail=True
+        self.page.locator('#build-history button').first.click()
+        self.assertTrue(self.fixture.detail_requested.wait(timeout=5))
+        self.fixture.publish_preview(2,[{'path':'client/main.lua','content':'newer code after old zero response','complete':False}])
+        expect(self.page.locator('#live-preview-code')).to_have_text('newer code after old zero response')
+        self.fixture.release_detail.set()
+        self.page.wait_for_timeout(100)
+        expect(self.page.locator('#live-preview-code')).to_have_text('newer code after old zero response')
+        with self.fixture.lock:
+            self.fixture.job.update(preview=None,previewVersion=0)
+        expect(self.page.locator('#live-preview-code')).to_be_hidden()
+        expect(self.page.locator('#live-preview-code')).to_have_text('')
+        expect(self.page.locator('#live-preview-state')).to_contain_text('Waiting for code')
+
+    def test_older_positive_detail_response_cannot_regress_preview_or_terminal_clear(self):
+        self.open()
+        self.fixture.publish_preview(1,[{'path':'client/main.lua','content':'older snapshot','complete':False}])
+        expect(self.page.locator('#live-preview-code')).to_have_text('older snapshot')
+        self.fixture.delay_job_detail=True
+        self.page.locator('#build-history button').first.click()
+        self.assertTrue(self.fixture.detail_requested.wait(timeout=5))
+        self.fixture.publish_preview(3,[{'path':'client/main.lua','content':'newest snapshot','complete':False}])
+        expect(self.page.locator('#live-preview-code')).to_have_text('newest snapshot')
+        self.fixture.release_detail.set()
+        self.page.wait_for_timeout(100)
+        expect(self.page.locator('#live-preview-code')).to_have_text('newest snapshot')
+        self.fixture.complete([{'path':'client/main.lua','content':'validated saved source'}])
+        expect(self.page.locator('#live-preview')).to_be_hidden()
+        expect(self.page.locator('#live-preview-code')).to_have_text('')
+        expect(self.page.locator('#code-editor')).to_have_value('validated saved source')
+
+    def test_deepseek_waiting_state_does_not_claim_incremental_streaming(self):
+        self.fixture.job['provider']='deepseek'
+        self.open()
+        expect(self.page.locator('#live-preview-state')).to_contain_text('Waiting for code')
+        expect(self.page.locator('#live-preview-detail')).to_contain_text('This provider returns code together')
+        expect(self.page.locator('#live-preview-code')).to_be_hidden()
+        expect(self.page.locator('#code-editor')).to_have_value('return 1')
+
+    def test_saved_manual_changes_sync_without_jobs_and_without_local_writes(self):
+        self.fixture.include_jobs=False
+        self.open()
+        with self.fixture.lock:
+            self.fixture.version=2
+            self.fixture.files=[{'path':'client/main.lua','content':'return 222 -- saved in another tab'}]
+            self.fixture.revisions[2]=copy.deepcopy(self.fixture.files)
+        expect(self.page.locator('#code-editor')).to_have_value('return 222 -- saved in another tab')
+        expect(self.page.locator('#source-sync-status')).to_contain_text('Saved source synced / revision 2')
+        self.assertEqual(self.fixture.saves,0)
+        self.assertEqual(self.fixture.mutation_requests,[])
+        self.assertEqual(self.fixture.detail_reads,0)
+
+    def test_saved_source_sync_preserves_unchanged_draft_caret_selection_scroll_and_original_base(self):
+        content=''.join(f'local value_{index} = "'+('x'*100)+'"\n' for index in range(100))
+        self.fixture.files=[{'path':'client/main.lua','content':content},{'path':'README.md','content':'original readme'}]
+        self.fixture.revisions[1]=copy.deepcopy(self.fixture.files)
+        self.fixture.include_jobs=False
+        self.open()
+        editor=self.page.locator('#code-editor')
+        draft=content+'-- unsaved local tail'
+        editor.fill(draft)
+        editor.focus()
+        editor.evaluate("node=>{node.setSelectionRange(180,200,'backward');node.scrollTop=180;node.scrollLeft=30;}")
+        before=editor.evaluate('node=>({start:node.selectionStart,end:node.selectionEnd,direction:node.selectionDirection,top:node.scrollTop,left:node.scrollLeft})')
+        with self.fixture.lock:
+            self.fixture.version=2
+            self.fixture.files[1]['content']='updated saved readme'
+            self.fixture.revisions[2]=copy.deepcopy(self.fixture.files)
+        expect(self.page.locator('#project-meta')).to_contain_text('revision 2')
+        expect(editor).to_have_value(draft)
+        self.assertEqual(editor.evaluate('node=>({start:node.selectionStart,end:node.selectionEnd,direction:node.selectionDirection,top:node.scrollTop,left:node.scrollLeft})'),before)
+        expect(self.page.locator('#draft-notice')).to_be_hidden()
+        with self.fixture.lock:
+            self.fixture.version=3
+            self.fixture.files[0]['content']='remote replacement of selected source'
+            self.fixture.revisions[3]=copy.deepcopy(self.fixture.files)
+        expect(self.page.locator('#draft-notice')).to_be_visible()
+        expect(editor).to_have_value(draft)
+        self.assertEqual(editor.evaluate('node=>({start:node.selectionStart,end:node.selectionEnd,direction:node.selectionDirection,top:node.scrollTop,left:node.scrollLeft})'),before)
+        raw=self.page.evaluate("sessionStorage.getItem('ndai:source-drafts:"+USER+':'+PROJECT+"')")
+        record=dict(json.loads(raw)['entries'])['client/main.lua']
+        self.assertEqual(record['baseVersion'],1)
+        self.assertEqual(record['baseContent'],content)
+
+    def test_preview_is_cleared_on_cancel_and_navigation_without_leaking_into_another_project(self):
+        self.open()
+        self.page.locator('#code-editor').fill('return 223 -- private draft remains')
+        self.fixture.publish_preview(1,[{'path':'client/main.lua','content':'unvalidated partial text','complete':False}])
+        expect(self.page.locator('#live-preview-code')).to_have_text('unvalidated partial text')
+        with self.fixture.lock:
+            self.fixture.job.update(status='cancelled',preview=None,previewVersion=0,updatedAt='2026-01-01T00:00:02.000Z')
+        expect(self.page.locator('#live-preview')).to_be_hidden()
+        expect(self.page.locator('#live-preview-code')).to_have_text('')
+        expect(self.page.locator('#code-editor')).to_have_value('return 223 -- private draft remains')
+        self.page.evaluate("location.hash='project/"+OTHER_PROJECT+"'")
+        expect(self.page.locator('#project-name')).to_have_text('Other project')
+        expect(self.page.locator('#live-preview')).to_be_hidden()
+        expect(self.page.locator('#live-preview-code')).to_have_text('')
+        expect(self.page.locator('#code-editor')).to_have_value('return 900')
+
+    def test_view_live_code_is_explicit_mobile_navigation_without_changing_route(self):
+        self.page.set_viewport_size({'width':390,'height':844})
+        self.open()
+        self.page.locator('button[data-panel=build]').click()
+        self.fixture.publish_preview(1,[{'path':'client/main.lua','content':'partial code to inspect','complete':False}])
+        expect(self.page.locator('#live-preview-code')).to_have_text('partial code to inspect')
+        old_hash=self.page.evaluate('location.hash')
+        self.page.locator('#view-live-preview').click()
+        expect(self.page.locator('#live-preview-code')).to_be_focused()
+        self.assertEqual(self.page.evaluate('location.hash'),old_hash)
+        top=self.page.locator('#live-preview').bounding_box()['y']
+        self.assertGreaterEqual(top,-2)
+        self.assertLess(top,200)
+        with self.fixture.lock:
+            self.fixture.job.update(status='cancelled',preview=None,previewVersion=0,updatedAt='2026-01-01T00:00:03.000Z')
+        expect(self.page.locator('#view-live-preview')).to_be_hidden()
+
+    def test_mobile_live_preview_long_lines_stay_inside_viewport(self):
+        self.page.set_viewport_size({'width':390,'height':844})
+        self.open()
+        self.fixture.publish_preview(1,[{'path':'client/main.lua','content':'local text = "'+('x'*10000)+'"','complete':False}])
+        expect(self.page.locator('#live-preview-code')).to_be_visible()
+        self.assertLessEqual(self.page.evaluate('document.documentElement.scrollWidth'),390)
+        self.assertGreater(self.page.locator('#live-preview-code').evaluate('node=>node.scrollWidth'),self.page.locator('#live-preview-code').evaluate('node=>node.clientWidth'))
+        expect(self.page.locator('#live-preview .live-preview-picker [role=combobox]')).to_have_accessible_name('Preview file')
+
+    def test_manual_check_and_poll_share_inflight_reads_and_recover_after_read_failure(self):
+        self.open()
+        requested,released=threading.Event(),threading.Event()
+        self.fixture.delayed_reads[f'/api/projects/{PROJECT}/jobs']=(requested,released)
+        self.assertTrue(requested.wait(timeout=5))
+        self.page.locator('#sync-source').click()
+        self.page.evaluate("window.dispatchEvent(new Event('online'))")
+        self.page.wait_for_timeout(100)
+        self.assertEqual(self.fixture.max_jobs_reads_active,1)
+        released.set()
+        expect(self.page.locator('#sync-source')).to_be_enabled()
+        self.fixture.fail_reads[f'/api/projects/{PROJECT}/jobs']=503
+        self.page.locator('#sync-source').click()
+        expect(self.page.locator('#source-sync-status')).to_contain_text('could not be checked')
+        self.fixture.fail_reads.clear()
+        self.page.locator('#sync-source').click()
+        expect(self.page.locator('#source-sync-status')).to_contain_text('Saved source synced')
+        expect(self.page.locator('#error')).to_be_hidden()
+        self.assertEqual(self.fixture.max_jobs_reads_active,1)
+        self.assertEqual(self.fixture.mutation_requests,[])
 
     def test_late_unauthorized_response_does_not_expire_a_recovered_same_user_session(self):
         requested,released=threading.Event(),threading.Event()
@@ -381,6 +640,7 @@ class WorkspaceBrowserTests(unittest.TestCase):
         self.page.locator('#code-editor').fill('return 889 -- a newer edit')
         self.page.locator('#code-editor').fill(text)
         self.fixture.release_save.set()
+        expect(self.page.locator('#save-status')).to_have_text('Saved source changed / local draft preserved')
         expect(self.page.locator('#draft-notice')).to_be_visible()
         expect(self.page.locator('#code-editor')).to_have_value(text)
         expect(self.page.locator('#file-list')).to_contain_text('client/main.lua (local draft)')
