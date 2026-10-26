@@ -322,6 +322,110 @@ class WorkspaceBrowserTests(unittest.TestCase):
         self.page.goto(self.fixture.url)
         expect(self.page.locator('#editor-view')).to_be_visible()
 
+    def prepare_accounting_result(self,reason,status='applied'):
+        accounting={'status':'unreconciled','reason':reason}
+        if status=='applied':
+            self.fixture.complete([{'path':'client/main.lua','content':'return 448 -- validated delivered source'}])
+            self.fixture.job['result']['accounting']=accounting
+            self.fixture.job['credits']={'amount':7,'state':'charged'}
+        else:
+            self.fixture.job.update(status='failed',result={'error':'Provider response did not produce a usable build.','accounting':accounting},
+                                    credits={'amount':7,'state':'pending'},updatedAt='2026-01-01T00:00:02.000Z')
+        self.fixture.job['costMicros']=self.fixture.job['reservedMicros']
+
+    def test_applied_unreconciled_cache_lifetimes_show_reserved_budget_and_keep_output_usable(self):
+        self.prepare_accounting_result('cache-write-lifetimes-unavailable')
+        self.open()
+        warning=self.page.locator('[data-provider-accounting=unreconciled]')
+        expect(warning).to_be_visible()
+        expect(warning).to_contain_text('Cache-write lifetime details were not provided')
+        expect(warning).to_contain_text('Validated source and its ZIP remain available')
+        expect(self.page.locator('#build-log')).to_contain_text('API budget reserved pending reconciliation: $0.5000')
+        expect(self.page.locator('#build-log')).to_contain_text('not a provider invoice')
+        expect(self.page.locator('#build-log')).not_to_contain_text('API cost estimate:')
+        expect(self.page.locator('#build-log')).to_contain_text('Studio credits: 7 / charged')
+        expect(self.page.locator('#build-state')).to_have_text('Completed')
+        expect(self.page.locator('#code-editor')).to_have_value('return 448 -- validated delivered source')
+        expect(self.page.locator('#download-build')).to_be_visible()
+        expect(self.page.locator('#download-build')).to_have_attribute('href',f'/api/jobs/{JOB}/export')
+        self.page.reload()
+        expect(warning).to_be_visible()
+        expect(warning).to_contain_text('Cache-write lifetime details were not provided')
+        expect(self.page.locator('#build-log')).to_contain_text('Studio credits: 7 / charged')
+        self.assertEqual(self.fixture.mutation_requests,[])
+        self.assertEqual(self.fixture.applies,0)
+
+    def test_applied_unreconciled_cache_price_does_not_turn_delivered_source_into_a_failure(self):
+        self.prepare_accounting_result('cache-write-price-unconfigured')
+        self.open()
+        expect(self.page.locator('[data-provider-accounting=unreconciled]')).to_contain_text('A required cache-write price is not configured')
+        expect(self.page.locator('#build-state')).to_have_text('Completed')
+        expect(self.page.locator('#download-build')).to_be_visible()
+        expect(self.page.locator('#code-editor')).to_have_value('return 448 -- validated delivered source')
+        expect(self.page.locator('#build-log')).to_contain_text('Studio credits: 7 / charged')
+        expect(self.page.locator('#build-log')).not_to_contain_text('API cost estimate:')
+        self.assertEqual(self.fixture.mutation_requests,[])
+
+    def test_failed_unreconciled_cache_lifetimes_keep_pending_studio_hold_separate(self):
+        self.prepare_accounting_result('cache-write-lifetimes-unavailable','failed')
+        self.open()
+        expect(self.page.locator('[data-provider-accounting=unreconciled]')).to_contain_text('Cache-write lifetime details were not provided')
+        expect(self.page.locator('#build-log')).to_contain_text('API budget reserved pending reconciliation: $0.5000')
+        expect(self.page.locator('#build-log')).to_contain_text('Studio credits: 7 / pending')
+        expect(self.page.locator('#build-log')).to_contain_text('Pending credits are holds, not finalized charges')
+        expect(self.page.locator('#build-log')).not_to_contain_text('Validated source and its ZIP remain available')
+        expect(self.page.locator('#build-state')).to_have_text('failed')
+        expect(self.page.locator('#download-build')).to_be_hidden()
+        expect(self.page.locator('#code-editor')).to_have_value('return 1')
+        self.page.reload()
+        expect(self.page.locator('[data-provider-accounting=unreconciled]')).to_be_visible()
+        expect(self.page.locator('#build-log')).to_contain_text('Studio credits: 7 / pending')
+        self.assertEqual(self.fixture.mutation_requests,[])
+
+    def test_failed_unreconciled_cache_price_remains_visible_without_claiming_a_normal_cost(self):
+        self.prepare_accounting_result('cache-write-price-unconfigured','failed')
+        self.open()
+        expect(self.page.locator('[data-provider-accounting=unreconciled]')).to_contain_text('A required cache-write price is not configured')
+        expect(self.page.locator('#build-log')).to_contain_text('not a provider invoice')
+        expect(self.page.locator('#build-log')).not_to_contain_text('API cost estimate:')
+        expect(self.page.locator('#build-state')).to_have_text('failed')
+        expect(self.page.locator('#code-editor')).to_have_value('return 1')
+        self.assertEqual(self.fixture.mutation_requests,[])
+
+    def test_failed_unreconciled_known_minimum_above_reservation_is_not_presented_as_an_exact_cost(self):
+        self.prepare_accounting_result('cache-write-lifetimes-unavailable','failed')
+        # One micro-dollar over the cap must not round back to the same amount.
+        self.fixture.job['costMicros']=500001
+        self.fixture.job['result']['error']='Known token costs exceeded the budget. No generated source was saved.'
+        self.open()
+        expected='Known API token cost is at least $0.500001, above the $0.5000 reservation.'
+        expect(self.page.locator('#build-log')).to_contain_text(expected)
+        expect(self.page.locator('#build-log')).to_contain_text('Cache-write pricing remains unreconciled; this is not a provider invoice')
+        expect(self.page.locator('#build-log')).to_contain_text('Known token costs exceeded the budget')
+        expect(self.page.locator('#build-log')).not_to_contain_text('API cost estimate:')
+        expect(self.page.locator('#build-log')).not_to_contain_text('API budget reserved pending reconciliation:')
+        expect(self.page.locator('#build-log')).to_contain_text('Studio credits: 7 / pending')
+        expect(self.page.locator('#build-state')).to_have_text('failed')
+        expect(self.page.locator('#download-build')).to_be_hidden()
+        expect(self.page.locator('#code-editor')).to_have_value('return 1')
+        self.page.reload()
+        expect(self.page.locator('#build-log')).to_contain_text(expected)
+        expect(self.page.locator('#download-build')).to_be_hidden()
+        expect(self.page.locator('#code-editor')).to_have_value('return 1')
+        self.assertEqual(self.fixture.mutation_requests,[])
+
+    def test_ordinary_delivered_job_keeps_normal_cost_estimate_and_credit_display(self):
+        self.fixture.complete([{'path':'client/main.lua','content':'return 449 -- normal delivered source'}])
+        self.fixture.job.update(costMicros=12345,credits={'amount':7,'state':'charged'})
+        self.open()
+        expect(self.page.locator('[data-provider-accounting=unreconciled]')).to_have_count(0)
+        expect(self.page.locator('#build-log')).to_contain_text('API cost estimate: $0.0123 / reservation: $0.5000')
+        expect(self.page.locator('#build-log')).not_to_contain_text('reserved pending reconciliation')
+        expect(self.page.locator('#build-log')).to_contain_text('Studio credits: 7 / charged')
+        expect(self.page.locator('#build-state')).to_have_text('Completed')
+        expect(self.page.locator('#download-build')).to_be_visible()
+        self.assertEqual(self.fixture.mutation_requests,[])
+
     def test_current_session_expiry_clears_ephemeral_preview_and_preserves_source_drafts(self):
         self.open()
         self.page.locator('#code-editor').fill('return 991 -- keep local source after expiry')
@@ -567,17 +671,26 @@ class WorkspaceBrowserTests(unittest.TestCase):
     def test_successful_explicit_draft_recovery_clears_the_earlier_conflict_error(self):
         self.open()
         self.page.locator('#code-editor').fill('return 444 -- my recovered source')
+        # Capture the version-1 write before the server's concurrent revision.
+        # Polling may then discover revision 2 without racing the Save click.
+        self.fixture.delay_save=True
+        self.page.locator('#save-file').click()
+        self.assertTrue(self.fixture.save_requested.wait(timeout=5))
+        self.assertEqual(self.fixture.mutation_requests[0]['body']['version'],1)
         with self.fixture.lock:
             self.fixture.version=2
             self.fixture.files=[{'path':'client/main.lua','content':'return 445 -- external source'}]
             self.fixture.revisions[2]=copy.deepcopy(self.fixture.files)
-        self.page.locator('#save-file').click()
+        self.fixture.delay_save=False
+        self.fixture.release_save.set()
         expect(self.page.locator('#error')).to_contain_text('Source changed')
         expect(self.page.locator('#draft-notice')).to_be_visible()
         self.page.locator('#compare-draft').click()
         self.page.locator('#save-draft').click()
         expect(self.page.locator('#save-status')).to_have_text('Saved revision 3')
         expect(self.page.locator('#error')).to_be_hidden()
+        self.assertEqual(self.fixture.mutation_requests[1]['body']['version'],2)
+        self.assertEqual(self.fixture.mutation_requests[1]['body']['content'],'return 444 -- my recovered source')
 
     def test_pending_rename_freezes_its_inputs_but_keeps_close_available(self):
         self.open()
@@ -1091,6 +1204,11 @@ class WorkspaceBrowserTests(unittest.TestCase):
         self.assertTrue(self.fixture.save_completed.wait(timeout=5))
         self.page.wait_for_function("!sessionStorage.getItem('ndai:source-drafts:" + USER + ':' + PROJECT + "')")
         self.page.get_by_role('link', name='Open project').click()
+        expect(self.page.locator('#editor-view')).to_be_visible()
+        saved_file=self.page.locator('#file-list').get_by_role('button',name='client/main.lua',exact=True)
+        expect(saved_file).to_be_visible()
+        saved_file.click()
+        expect(self.page.locator('#file-list')).not_to_contain_text('* ')
         expect(self.page.locator('#code-editor')).to_have_value('return 567 -- saved while navigating')
         expect(self.page.locator('#save-status')).to_have_text('Saved revision 2')
         self.assertEqual(self.fixture.saves, 1)

@@ -61,6 +61,7 @@ async function sourceWrite(context,action){
 }
 
 const money=value=>`$${(value/1000000).toFixed(4)}`;
+const minimumMoney=value=>`$${(value/1000000).toFixed(6).replace(/0{1,2}$/,'')}`;
 const time=value=>new Date(value).toLocaleString();
 function dirty(){return state.drafts.size>0;}
 function panel(name){$('workbench').dataset.panel=name;document.querySelectorAll('[data-panel]').forEach(node=>{if(node.tagName==='BUTTON')node.setAttribute('aria-pressed',String(node.dataset.panel===name));});}
@@ -302,7 +303,18 @@ function renderBuilds(){
   if(state.job.result?.error)nodes.push(el('p','danger',state.job.result.error));
   if(state.job.applicationError)nodes.push(el('p','danger',`${state.job.applicationError} Finished output is preserved. Download the build ZIP or compare its files with your saved source.`));
   if(state.job.appliedVersion)nodes.push(el('p','',`Saved as project revision ${state.job.appliedVersion}. History, comparison and ZIP remain available.`));
-  nodes.push(el('p','',`Model: ${state.job.modelLabel || state.job.model || 'Original configured model'}. API cost estimate: ${money(state.job.costMicros)} / reservation: ${money(state.job.reservedMicros)}. Provider invoices may differ. Studio credits: ${state.job.credits?.amount ?? 0} / ${state.job.credits?.state || 'not-used'}. Pending credits are holds, not finalized charges.`));
+  const unreconciled=state.job.result?.accounting?.status==='unreconciled';
+  if(unreconciled){
+    const reasons={'cache-write-lifetimes-unavailable':'Cache-write lifetime details were not provided.','cache-write-price-unconfigured':'A required cache-write price is not configured.'};
+    const delivered=Array.isArray(state.job.result?.files)&&['applied','review'].includes(state.job.status);
+    const warning=el('p','notice',`Provider accounting needs reconciliation. ${reasons[state.job.result.accounting.reason]||'Cache-write token cost could not be reconciled.'}${delivered?' Validated source and its ZIP remain available.':''}`);
+    warning.dataset.providerAccounting='unreconciled';nodes.push(warning);
+  }
+  let providerCost=`API cost estimate: ${money(state.job.costMicros)} / reservation: ${money(state.job.reservedMicros)}. Provider invoices may differ.`;
+  if(unreconciled)providerCost=state.job.costMicros>state.job.reservedMicros?
+    `Known API token cost is at least ${minimumMoney(state.job.costMicros)}, above the ${minimumMoney(state.job.reservedMicros)} reservation. Cache-write pricing remains unreconciled; this is not a provider invoice.`:
+    `API budget reserved pending reconciliation: ${money(state.job.reservedMicros)}. The full budget reservation is not a provider invoice.`;
+  nodes.push(el('p','',`Model: ${state.job.modelLabel || state.job.model || 'Original configured model'}. ${providerCost} Studio credits: ${state.job.credits?.amount ?? 0} / ${state.job.credits?.state || 'not-used'}. Pending credits are holds, not finalized charges.`));
   $('build-log').replaceChildren(...nodes);renderLivePreview();
 }
 const previewVersion=job=>Number.isSafeInteger(job?.previewVersion)?job.previewVersion:Number.isSafeInteger(job?.preview?.sequence)?job.preview.sequence:0;

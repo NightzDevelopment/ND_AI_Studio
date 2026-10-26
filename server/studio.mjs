@@ -157,8 +157,14 @@ export function createStudio({ store, config, catalog, required, mutation, readJ
           json(res,200,{ ok:true }); return true;
         }
         if (path === '/api/worker/complete') {
-          fields(body.result,['files','summary','checks','error']);
+          fields(body.result,['files','summary','checks','error','accounting']);
           const cost = integer(body.costMicros,0,1000000000,'reported cost');
+          let accounting;
+          if (body.result.accounting !== undefined) {
+            fields(body.result.accounting,['status','reason']);
+            insist(body.result.accounting.status === 'unreconciled' && ['cache-write-lifetimes-unavailable','cache-write-price-unconfigured'].includes(body.result.accounting.reason),400,'Invalid provider accounting status.');
+            accounting = { status:'unreconciled',reason:body.result.accounting.reason };
+          }
           let result, status;
           if (body.result.error) {
             result = { error:string(body.result.error,1000,'build error') }; status='failed';
@@ -167,6 +173,7 @@ export function createStudio({ store, config, catalog, required, mutation, readJ
             insist(Array.isArray(body.result.checks) && body.result.checks.length <= 100 && body.result.checks.every(check => typeof check === 'string' && check.length <= 2000),400,'Invalid build checks.');
             result = { files, summary:string(body.result.summary,2000,'build summary'), checks:body.result.checks }; status='review';
           }
+          if (accounting) result.accounting = accounting;
           const fingerprint = digest(JSON.stringify({costMicros:cost,result}));
           const completed = store.transaction(() => {
             const previous = store.db.prepare('SELECT * FROM studio_jobs WHERE id=?').get(body.id || '');
@@ -175,7 +182,8 @@ export function createStudio({ store, config, catalog, required, mutation, readJ
               return previous;
             }
             const row = workerJob(body), settings = JSON.parse(row.settings);
-            if (cost > settings.maxBudgetMicros) { status='failed'; result={ error:'Provider usage exceeded the configured estimate. Review billing and model prices before retrying.' }; }
+            insist(!accounting || cost >= settings.maxBudgetMicros,400,'Unreconciled provider accounting must retain at least the full captured build reservation.');
+            if (cost > settings.maxBudgetMicros) { status='failed'; result={ error:'Provider usage exceeded the configured estimate. Review billing and model prices before retrying.',...(accounting?{accounting}:{}) }; }
             let appliedVersion = null, applicationError = null;
             if (status === 'review' && row.application_mode === 'automatic') {
               // A save conflict must retain the validated output without partial source writes.

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { runJob } from '../worker/start.mjs';
+import { generate } from '../worker/provider.mjs';
 
 const files=[{path:'README.md',content:'# Finished source'},{path:'main.js',content:'const ready = true;'}];
 const job={id:'completion-test',lease:'original-lease',prompt:'Build source',settings:{model:'fixture-model',maxCalls:2,maxOutputTokens:1024,maxBudgetMicros:1000000,inputUsdPerMillion:1,outputUsdPerMillion:2},project:{name:'Source',tool_id:'discord-bot-generator',target:'Standalone',requirements:'Build source',files:[]}};
@@ -26,6 +27,7 @@ test('lost successful acknowledgement replays one completion without repeating p
   assert.equal(receipts.length,2);assert.equal(receipts[0],receipts[1]);
   assert.deepEqual(pauses,[250]);assert.equal(reply.appliedVersion,2);
   assert.deepEqual(JSON.parse(receipts[0]).result.files,files);
+  assert.equal('accounting' in JSON.parse(receipts[0]).result,false);
 });
 
 test('temporary completion failures have bounded backoff and identical original receipt data',async()=>{
@@ -133,4 +135,87 @@ test('an in-flight heartbeat rejection after terminal commit cannot invalidate c
     }
   }));
   assert.equal(heartbeats,1);assert.equal(completions,2);
+});
+
+const unreconciled={status:'unreconciled',reason:'cache-write-lifetimes-unavailable'};
+function meteredResponse(usage,extra={}){
+  return new Response(JSON.stringify({status:'completed',usage,output:[{type:'message',content:[{type:'output_text',text:JSON.stringify({summary:'Generated source',changes:files})}]}],...extra}));
+}
+
+test('a known first call followed by an unpriced repair retains exactly one full job reservation',async()=>{
+  const receipts=[],spent=[];let requested=0,checked=0;
+  await runJob(job,preparation({key:'fixture-provider-key',
+    generator:async(current,source,options)=>{spent.push(options.spent);return generate(current,source,{...options,fetcher:async()=>{
+      requested++;return meteredResponse(requested===1?{input_tokens:100,output_tokens:20}:{input_tokens:100,output_tokens:20,input_tokens_details:{cache_write_tokens:30}});
+    }});},
+    validator:async()=>({ok:++checked===2,kind:checked===2?'ok':'source',checks:checked===1?['main.js: syntax failed.']:['Syntax passed.']}),
+    api:async(path,body)=>{if(path==='/api/worker/complete')receipts.push(body);return {};}
+  }));
+  assert.equal(requested,2);assert.equal(checked,2);assert.deepEqual(spent,[0,140]);
+  assert.equal(receipts.length,1);assert.equal(receipts[0].costMicros,job.settings.maxBudgetMicros);
+  assert.equal(receipts[0].result.error,undefined);assert.deepEqual(receipts[0].result.accounting,unreconciled);
+});
+
+test('unpriced first-call validation failure cannot dispatch another paid repair',async()=>{
+  const receipts=[];let requested=0,checked=0;
+  await runJob(job,preparation({key:'fixture-provider-key',
+    generator:async(current,source,options)=>generate(current,source,{...options,fetcher:async()=>{requested++;return meteredResponse({input_tokens:100,output_tokens:20,input_tokens_details:{cache_write_tokens:30}});}}),
+    validator:async()=>{checked++;return {ok:false,kind:'source',checks:['main.js: syntax failed.']};},
+    api:async(path,body)=>{if(path==='/api/worker/complete')receipts.push(body);return {};}
+  }));
+  assert.equal(requested,1);assert.equal(checked,1);assert.equal(receipts.length,1);
+  assert.equal(receipts[0].costMicros,job.settings.maxBudgetMicros);assert.equal(receipts[0].result.files,undefined);
+  assert.match(receipts[0].result.error,/no further provider request was sent/i);assert.deepEqual(receipts[0].result.accounting,unreconciled);
+});
+
+test('unpriced successful completion preserves immutable accounting metadata across acknowledgement retries',async()=>{
+  const receipts=[];let generated=0,checked=0;
+  await runJob(job,preparation({
+    generator:async()=>{generated++;return {files,summary:'Validated source',cost:job.settings.maxBudgetMicros,accounting:{...unreconciled}};},
+    validator:async()=>{checked++;return {ok:true,checks:['Syntax passed.']};},
+    api:async(path,body)=>{
+      if(path!=='/api/worker/complete')return {};
+      receipts.push(JSON.stringify(body));
+      if(receipts.length===1){body.result.accounting.reason='cache-write-price-unconfigured';throw new TypeError('Acknowledgement lost after commit');}
+      return {ok:true,status:'applied'};
+    }
+  }));
+  assert.equal(generated,1);assert.equal(checked,1);assert.equal(receipts.length,2);assert.equal(receipts[0],receipts[1]);
+  const saved=JSON.parse(receipts[0]);assert.equal(saved.costMicros,job.settings.maxBudgetMicros);assert.deepEqual(saved.result.accounting,unreconciled);assert.deepEqual(saved.result.files,files);
+});
+
+test('cancellation after unpriced provider output preserves the reservation but never submits unchecked files',async()=>{
+  const stop=new AbortController(),receipts=[];let checked=0;
+  await runJob(job,preparation({signal:stop.signal,
+    generator:async()=>{stop.abort();return {files,summary:'Unchecked source',cost:job.settings.maxBudgetMicros,accounting:{...unreconciled}};},
+    validator:async()=>{checked++;return {ok:true,checks:[]};},
+    api:async(path,body)=>{if(path==='/api/worker/complete')receipts.push(body);return {};}
+  }));
+  assert.equal(checked,0);assert.equal(receipts.length,1);assert.equal(receipts[0].costMicros,job.settings.maxBudgetMicros);
+  assert.equal(receipts[0].result.files,undefined);assert.match(receipts[0].result.error,/interrupted/);assert.deepEqual(receipts[0].result.accounting,unreconciled);
+});
+
+test('validator infrastructure failure after unpriced output preserves its accounting without a paid repair',async()=>{
+  const receipts=[];let generated=0,checked=0;
+  await runJob(job,preparation({
+    generator:async()=>{generated++;return {files,summary:'Unchecked source',cost:job.settings.maxBudgetMicros,accounting:{...unreconciled}};},
+    validator:async()=>{checked++;throw Object.assign(new Error('Validator infrastructure unavailable.'),{status:503});},
+    api:async(path,body)=>{if(path==='/api/worker/complete')receipts.push(body);return {};}
+  }));
+  assert.equal(generated,1);assert.equal(checked,1);assert.equal(receipts.length,1);assert.equal(receipts[0].costMicros,job.settings.maxBudgetMicros);
+  assert.equal(receipts[0].result.files,undefined);assert.match(receipts[0].result.error,/infrastructure/);assert.deepEqual(receipts[0].result.accounting,unreconciled);
+});
+
+test('invalid structured output with unpriced usage propagates its full reservation and accounting to failure delivery',async()=>{
+  const receipts=[];let requested=0,checked=0;
+  await runJob(job,preparation({key:'fixture-provider-key',
+    generator:async(current,source,options)=>generate(current,source,{...options,fetcher:async()=>{
+      requested++;return meteredResponse({input_tokens:100,output_tokens:20,input_tokens_details:{cache_write_tokens:30}},
+        {output:[{type:'message',content:[{type:'output_text',text:'{malformed JSON'}]}]});
+    }}),
+    validator:async()=>{checked++;return {ok:true,checks:[]};},
+    api:async(path,body)=>{if(path==='/api/worker/complete')receipts.push(body);return {};}
+  }));
+  assert.equal(requested,1);assert.equal(checked,0);assert.equal(receipts.length,1);assert.equal(receipts[0].costMicros,job.settings.maxBudgetMicros);
+  assert.equal(receipts[0].result.files,undefined);assert.ok(receipts[0].result.error);assert.deepEqual(receipts[0].result.accounting,unreconciled);
 });

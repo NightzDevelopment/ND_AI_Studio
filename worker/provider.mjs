@@ -53,6 +53,13 @@ function count(value,label) {
   insist(Number.isSafeInteger(value) && value>=0,502,`The provider returned invalid ${label}.`);
   return value;
 }
+function unpricedCacheWrites(reason,message,minimum) {
+  const error=new Error(message);
+  error.status=502;
+  error.providerAccounting={status:'unreconciled',reason};
+  error.providerCostMinimumMicros=minimum;
+  return error;
+}
 function contextMultipliers(input,settings) {
   const extended=settings.longContextThreshold != null && input>settings.longContextThreshold;
   return extended ? {input:settings.longContextInputMultiplier ?? 1,output:settings.longContextOutputMultiplier ?? 1} : {input:1,output:1};
@@ -69,17 +76,23 @@ export function price(usage, settings) {
     shortWrites=count(details.cache_write_tokens_details.ttl_30m_tokens,'30-minute cache write counts');
     longWrites=count(details.cache_write_tokens_details.ttl_12h_tokens,'12-hour cache write counts');
     insist(shortWrites+longWrites===writes,502,'The provider returned inconsistent cache write counts.');
-  } else insist(writes===0,502,'The provider omitted the cache write lifetime counts.');
+  }
   const shortRate=settings.cacheWrite30mUsdPerMillion,longRate=settings.cacheWrite12hUsdPerMillion;
-  insist(shortWrites===0 || (typeof shortRate==='number' && Number.isFinite(shortRate) && shortRate>=0),502,'Configure the reported 30-minute cache write price before reconciling this build.');
-  insist(longWrites===0 || (typeof longRate==='number' && Number.isFinite(longRate) && longRate>=0),502,'Configure the reported 12-hour cache write price before reconciling this build.');
+  const shortKnown=typeof shortRate==='number'&&Number.isFinite(shortRate)&&shortRate>=0;
+  const longKnown=typeof longRate==='number'&&Number.isFinite(longRate)&&longRate>=0;
   const cachedRate=settings.cachedInputUsdPerMillion ?? settings.inputUsdPerMillion;
   const multipliers=contextMultipliers(input,settings);
-  // Cached reads and writes are nonoverlapping input subsets. Reasoning is already in output_tokens.
-  const inputCost=(input-cached-writes)*settings.inputUsdPerMillion + cached*cachedRate + shortWrites*(shortRate ?? 0) + longWrites*(longRate ?? 0);
-  const cost=Math.ceil(inputCost*multipliers.input + output*settings.outputUsdPerMillion*multipliers.output);
-  insist(Number.isSafeInteger(cost) && cost>=0,502,'The provider usage cost could not be safely calculated.');
-  return cost;
+  // Unknown write prices contribute no invented charge to this lower bound.
+  // Every independently known charge still counts against the remaining budget.
+  const knownInput=(input-cached-writes)*settings.inputUsdPerMillion+cached*cachedRate+(shortKnown?shortWrites*shortRate:0)+(longKnown?longWrites*longRate:0);
+  const minimum=Math.ceil(knownInput*multipliers.input+output*settings.outputUsdPerMillion*multipliers.output);
+  insist(Number.isSafeInteger(minimum)&&minimum>=0,502,'The provider usage cost could not be safely calculated.');
+  if(writes>0&&details?.cache_write_tokens_details==null)throw unpricedCacheWrites('cache-write-lifetimes-unavailable','The provider reported cache writes without a lifetime breakdown.',minimum);
+  if(shortWrites>0&&!shortKnown)throw unpricedCacheWrites('cache-write-price-unconfigured','Configure the reported 30-minute cache write price before reconciling this build.',minimum);
+  if(longWrites>0&&!longKnown)throw unpricedCacheWrites('cache-write-price-unconfigured','Configure the reported 12-hour cache write price before reconciling this build.',minimum);
+  // Every reported category is priced here, so the lower bound is the complete
+  // estimate. Reasoning tokens are already included in output_tokens.
+  return minimum;
 }
 export function reserveFor(payload, settings) {
   // One byte per input token plus framing headroom is a conservative bound, not an invoice.
@@ -178,7 +191,22 @@ export async function generate(job, files, { key, signal, spent=0, diagnostics=[
   // Do not retry POSTs automatically: an interrupted request may already have incurred usage.
   insist(response.ok,502,`AI provider request failed (${response.status}). It was not automatically retried.`);
   const streaming=response.headers.get('content-type')?.split(';',1)[0].trim().toLowerCase()==='text/event-stream';
-  const data=streaming?await readResponseStream(response,{onPreview,signal:request.signal}):await readLimited(response,2097152), cost=price(data.usage,job.settings);
+  const data=streaming?await readResponseStream(response,{onPreview,signal:request.signal}):await readLimited(response,2097152);
+  let cost,accounting;
+  try { cost=price(data.usage,job.settings); }
+  catch(error) {
+    // Do not guess a lifetime or a missing price. Preserve the full remaining
+    // reservation, and allow only authoritative output through normal validation.
+    if(!error.providerAccounting)throw error;
+    const remaining=job.settings.maxBudgetMicros-spent;
+    if(error.providerCostMinimumMicros>remaining){
+      const failure=new Error('Known token cost already exceeds the remaining build budget. Cache-write cost still needs reconciliation; the reported amount is only a known minimum.');
+      failure.status=502;failure.providerCostMicros=error.providerCostMinimumMicros;failure.providerAccounting=error.providerAccounting;throw failure;
+    }
+    cost=remaining;
+    insist(Number.isSafeInteger(cost)&&cost>=0,502,'The provider cost reservation could not be safely retained.');
+    accounting=error.providerAccounting;
+  }
   try {
   insist(data.status === 'completed',502,'The provider response was incomplete. Increase the output limit or reduce the request.');
   const content=(data.output || []).flatMap(item=>item.type === 'message' ? item.content || [] : []);
@@ -190,6 +218,6 @@ export async function generate(job, files, { key, signal, spent=0, diagnostics=[
   const next=changedFiles(files,output.changes);
   insist(next.length>0,502,'The provider returned an empty project.');
   publishPreview(onPreview,text);
-  return { files:next,summary:output.summary,cost };
-  } catch (error) { error.providerCostMicros=cost; throw error; }
+  return { files:next,summary:output.summary,cost,...(accounting?{accounting}:{}) };
+  } catch (error) { error.providerCostMicros=cost;if(accounting)error.providerAccounting=accounting;throw error; }
 }

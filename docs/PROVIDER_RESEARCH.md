@@ -1,6 +1,8 @@
 # Provider verification record
 
-Research date: 2026-10-25. This record covers public documentation and source inspection. It does not establish account access, authorize paid requests, enable a model, or prove live generation. No paid probes or provider fallback requests were made.
+Initial research date: 2026-10-25. Cache-accounting review: 2026-10-26. This record covers public documentation and source inspection. It does not establish account access, authorize paid requests, enable a model, or prove live generation. No paid probes or provider fallback requests were made.
+
+The model prices, limits and provider-guide details below retain their earlier research provenance. They were not independently reverified during the cache-accounting review: the OpenAI prompt-caching guide and model-page requests returned proxy HTTP 403. Official SDK sources were accessible and provide the pinned evidence below. Desired network settings do not establish effective runtime access.
 
 ## Small coding selection
 
@@ -36,9 +38,11 @@ Use the fixed HTTPS endpoint `https://api.openai.com/v1/responses`, a private wo
 
 For the three OpenAI candidates above, prompts exceeding 272K input tokens use twice the ordinary input and cache rates and 1.5 times the output rate for the full request. These multipliers are verified for these model profiles, not arbitrary older or custom models.
 
-Caching needs explicit treatment. For GPT-5.6 and later, cache writes are billed at 1.25 times the ordinary input price for the default 30-minute lifetime, or 2.5 times the input price for the optional 12-hour lifetime. These replace the ordinary rate for those tokens; they are not an additional charge on the same ordinary tokens.
+Caching needs explicit treatment. The earlier prompt-caching research recorded write rates of 1.25 times ordinary input for 30 minutes and 2.5 times ordinary input for 12 hours. These remain historical reference values requiring a current pricing check before configuration. The SDK sources inspected in the later review do not establish either price and currently type only a `30m` request TTL. Do not assume that every model supports both lifetimes.
 
-The documented nesting is:
+The official [Python Responses usage type](https://github.com/openai/openai-python/blob/5d72315876ffd8b72b958623ef4db26da3fb1e61/src/openai/types/responses/response_usage.py#L8-L18) and [Node Responses usage type](https://github.com/openai/openai-node/blob/7562cd29af87561ccce4e1ec4b873c2c04c97f87/src/resources/responses/responses.ts#L9385-L9400) define `input_tokens_details.cache_write_tokens` and `cached_tokens` without a required lifetime breakdown. Positive aggregate writes without `cache_write_tokens_details` are therefore compatible with these schemas. SDK types do not prove that an enriched breakdown can never appear; they do rule out treating that breakdown as a universal requirement.
+
+When a response supplies an enriched breakdown, its supported accounting shape is:
 
 ```json
 {
@@ -56,11 +60,13 @@ The documented nesting is:
 }
 ```
 
-Here ordinary input is `12000 - 4000 - 7000 = 1000`. The two write components do not overlap and sum to the write count. Charge ordinary tokens at the ordinary input rate, reads at the cached rate, and each write component at its corresponding write rate. Validate counts and reject inconsistent usage rather than undercounting it. Output tokens already include reasoning tokens; do not add the reasoning subset again.
+Here ordinary input is `12000 - 4000 - 7000 = 1000`. Validate nonnegative safe integer counts, nonoverlap with cached reads and write components summing to the aggregate. If the captured rates are known, charge ordinary tokens at the ordinary input rate, reads at the cached rate, and each write component at its corresponding write rate. Writes replace the ordinary input rate for those tokens. Output tokens already include reasoning tokens; do not add that subset again. Inconsistent counts cannot support an exact cost calculation.
 
-The prompt-caching guide documents a supported way to avoid cache writes on these newer models: send top-level `prompt_cache_options: { "mode": "explicit" }` and place no explicit cache breakpoints. The request then uses neither caching nor cache writes. This policy must be confined to supported model profiles and captured with the job. Do not send new caching fields to arbitrary legacy models or assume that `store: false` controls caching.
+The pinned [Python request schema](https://github.com/openai/openai-python/blob/5d72315876ffd8b72b958623ef4db26da3fb1e61/src/openai/types/responses/response_create_params.py#L169-L180) documents `prompt_cache_options` for GPT-5.6 and later, implicit caching by default and a default `30m` TTL. Its [options type](https://github.com/openai/openai-python/blob/5d72315876ffd8b72b958623ef4db26da3fb1e61/src/openai/types/responses/response_create_params.py#L407-L441) and [Node equivalent](https://github.com/openai/openai-node/blob/7562cd29af87561ccce4e1ec4b873c2c04c97f87/src/resources/responses/responses.ts#L12078-L12117) document that top-level `prompt_cache_options: { "mode": "explicit" }` without explicit breakpoints uses no prompt caching. This policy must be confined to supported model profiles and captured with the job. Do not send new caching fields to arbitrary legacy models or infer a custom model's policy or price from its identifier. The separate [retention field](https://github.com/openai/openai-python/blob/5d72315876ffd8b72b958623ef4db26da3fb1e61/src/openai/types/responses/response_create_params.py#L183-L200) describes maximum retention, whereas TTL is a minimum lifetime; a `24h` retention setting does not establish a 12-hour write-price band. `store: false` does not select a cache policy.
 
-[Official prompt-caching contract, rates and usage examples](https://developers.openai.com/api/docs/guides/prompt-caching).
+If aggregate writes lack a lifetime allocation, or a needed captured write price is absent, provider cost remains unreconciled. Custom models may have `provider-default` caching and null write prices; the worker must not invent either a TTL or a price. Keep the full existing job budget reserved and record explicit `result.accounting` metadata for owner reconciliation. This retained amount is a reservation estimate, not a provider invoice or a proven upper bound on the actual charge. Independently known ordinary, cached-read, output and priced-write costs still apply: if their minimum already exceeds the remaining budget, fail the build and retain that known minimum with unreconciled metadata. Missing billing detail alone does not invalidate returned source: other bounded source still undergoes the ordinary offline validation and delivery path, without another paid repair request to obtain billing metadata. A successfully delivered result settles its captured fixed Studio credit charge exactly once, independently of unresolved provider cost.
+
+[Official prompt-caching guide](https://developers.openai.com/api/docs/guides/prompt-caching), inaccessible during the later review; use the pinned SDK evidence above for the corrected response-shape requirement.
 
 ## DeepSeek request and accounting contract
 
