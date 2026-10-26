@@ -42,6 +42,15 @@ export class Store {
         PRAGMA user_version=1;
       `);
     });
+    // Creation receipts deliberately do not reference a brief: deleting a brief
+    // must not let a delayed retry recreate it. Existing import source IDs stay separate.
+    this.transaction(() => this.db.exec(`
+      CREATE TABLE IF NOT EXISTS brief_create_requests (
+        user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        request_id TEXT NOT NULL, fingerprint TEXT NOT NULL, brief_id TEXT NOT NULL,
+        created_at TEXT NOT NULL, PRIMARY KEY(user_id, request_id)
+      ) STRICT;
+    `));
   }
   transaction(fn) {
     this.db.exec('BEGIN IMMEDIATE');
@@ -90,6 +99,13 @@ export class Store {
     this.db.prepare('INSERT INTO briefs(id,user_id,tool_id,name,requirements,target,created_at,updated_at,source_id) VALUES(?,?,?,?,?,?,?,?,?)')
       .run(id, userId, data.toolId, data.name, data.requirements, data.target, now, now, sourceId);
     return id;
+  }
+  briefCreateReceipt(userId, requestId) {
+    return this.db.prepare('SELECT fingerprint,brief_id FROM brief_create_requests WHERE user_id=? AND request_id=?').get(userId, requestId);
+  }
+  rememberBriefCreate(userId, requestId, fingerprint, briefId) {
+    this.db.prepare('INSERT INTO brief_create_requests(user_id,request_id,fingerprint,brief_id,created_at) VALUES(?,?,?,?,?)')
+      .run(userId, requestId, fingerprint, briefId, new Date().toISOString());
   }
   update(userId, id, data) {
     return this.db.prepare(`UPDATE briefs SET tool_id=?,name=?,requirements=?,target=?,version=version+1,updated_at=?

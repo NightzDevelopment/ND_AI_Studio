@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
+import { request as httpRequest } from 'node:http';
+import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -11,8 +13,8 @@ import { discordIdentity } from '../server/discord.mjs';
 const catalog = JSON.parse(readFileSync(new URL('../config/tools.json', import.meta.url), 'utf8'));
 const brief = { name: 'ND_Garage', requirements: 'Use oxmysql and preserve vehicle state.', toolId: 'ai-script-generator', target: 'ND_Framework' };
 
-async function fixture(t) {
-  const store = new Store(':memory:');
+async function fixture(t, database = ':memory:') {
+  const store = new Store(database);
   const config = readConfig({ APP_ORIGIN: 'https://ai.nightz.dev', DISCORD_CLIENT_ID: '123456789012345678', DISCORD_CLIENT_SECRET: 'unit-test-only-secret' });
   let calls = 0;
   const app = createApp({ config, store, catalog, logger: { error() {} }, identity: async (_, code) => {
@@ -37,8 +39,42 @@ async function fixture(t) {
     const session = cookie ? await (await request('/api/session', { cookie })).json() : null;
     return { cookie, csrf: session?.csrf, user: session?.user, state, flow, result, location };
   }
-  t.after(async () => { app.closeAllConnections(); await new Promise(resolve => app.close(resolve)); store.close(); });
-  return { request, login, store, config, calls: () => calls };
+  let closed = false;
+  const close = async () => { if (closed) return; closed = true; app.closeAllConnections(); await new Promise(resolve => app.close(resolve)); store.close(); };
+  t.after(close);
+  return { request, login, store, config, url, app, close, calls: () => calls };
+}
+
+async function streamingMutation(f, login, path, method, body, afterAuthentication) {
+  const encoded = JSON.stringify(body), original = f.store.session.bind(f.store);
+  return new Promise((resolve, reject) => {
+    let authenticated = false;
+    const restore = () => { f.store.session = original; };
+    const request = httpRequest(new URL(path, f.url), { method, headers: {
+      cookie: login.cookie, origin: f.config.origin, 'x-csrf-token': login.csrf,
+      'content-type': 'application/json', 'content-length': Buffer.byteLength(encoded),
+    } }, response => {
+      let text = '';
+      response.on('data', chunk => { text += chunk; });
+      response.on('end', () => { restore(); resolve({ status: response.statusCode, data: JSON.parse(text) }); });
+      response.on('error', reject);
+    });
+    request.on('error', error => { restore(); reject(error); });
+    request.setTimeout(3000, () => request.destroy(new Error('Streaming account fixture timed out.')));
+    f.store.session = (...args) => {
+      const current = original(...args);
+      if (current && !authenticated) {
+        authenticated = true;
+        queueMicrotask(async () => {
+          restore();
+          try { await afterAuthentication(); request.end(encoded.slice(1)); }
+          catch (error) { request.destroy(error); }
+        });
+      }
+      return current;
+    };
+    request.write(encoded.slice(0, 1));
+  });
 }
 
 test('configuration rejects unsafe origins and incomplete OAuth settings', () => {
@@ -184,4 +220,181 @@ test('account export only includes the signed-in user and never session secrets'
   assert.ok(!JSON.stringify(data).includes(login.csrf));
   assert.ok(!JSON.stringify(data).includes(login.cookie.split('=')[1]));
   assert.equal(response.headers.get('cache-control'), 'no-store');
+});
+
+for (const endpoint of ['profile', 'create', 'import', 'update', 'delete']) {
+  for (const invalidation of ['logout-all', 'expired', 'suspended', 'csrf-rotated']) {
+    test(`${endpoint} mutation rejects ${invalidation} authentication while its request body is streaming`, async t => {
+      const f = await fixture(t), login = await f.login();
+      const id = f.store.create(login.user.id, brief);
+      const operations = {
+        profile: ['/api/account', 'PATCH', { displayName: 'Must not save', bio: '', preferredFramework: 'Standalone', density: 'compact', version: 1 }],
+        create: ['/api/briefs', 'POST', { ...brief, name: 'Must not create' }],
+        import: ['/api/briefs/import', 'POST', { briefs: [{ ...brief, sourceId: 'streaming-import' }] }],
+        update: [`/api/briefs/${id}`, 'PATCH', { ...brief, name: 'Must not update', version: 1 }],
+        delete: [`/api/briefs/${id}`, 'DELETE', { version: 1 }],
+      };
+      const result = await streamingMutation(f, login, ...operations[endpoint], async () => {
+        if (invalidation === 'logout-all') {
+          const logout = await f.request('/api/logout-all', { ...login, method: 'POST', body: {} });
+          assert.equal(logout.status, 200);
+        } else if (invalidation === 'expired') {
+          f.store.db.prepare('UPDATE sessions SET expires_at=0 WHERE user_id=?').run(login.user.id);
+        } else if (invalidation === 'suspended') {
+          f.store.db.prepare('INSERT INTO studio_controls(user_id,status) VALUES(?,?)').run(login.user.id, 'suspended');
+        } else {
+          f.store.db.prepare('UPDATE sessions SET csrf=? WHERE user_id=?').run('x'.repeat(43), login.user.id);
+        }
+      });
+      assert.equal(result.status, invalidation === 'csrf-rotated' ? 403 : 401, JSON.stringify(result.data));
+      assert.equal(f.store.user(login.user.id).display_name, 'Creator');
+      assert.equal(f.store.user(login.user.id).version, 1);
+      assert.deepEqual(f.store.list(login.user.id).map(item => ({ id: item.id, name: item.name, version: item.version })), [{ id, name: brief.name, version: 1 }]);
+    });
+  }
+}
+
+test('a streaming mutation cannot change its original authenticated account binding', async t => {
+  const f = await fixture(t), login = await f.login(), other = await f.login('other');
+  const result = await streamingMutation(f, login, '/api/briefs', 'POST', brief, async () => {
+    f.store.db.prepare('UPDATE sessions SET user_id=? WHERE hash=?').run(other.user.id, hash(login.cookie.split('=')[1]));
+  });
+  assert.equal(result.status, 401);
+  assert.equal(f.store.count(login.user.id), 0); assert.equal(f.store.count(other.user.id), 0);
+});
+
+test('commit-time authentication checks do not consume the write-rate allowance twice', async t => {
+  const f = await fixture(t), login = await f.login();
+  for (let revision = 1; revision <= 90; revision++) {
+    const response = await f.request('/api/account', { ...login, method: 'PATCH', body: {
+      displayName: 'Creator', bio: '', preferredFramework: 'Standalone', density: 'comfortable', version: revision,
+    } });
+    assert.equal(response.status, 200, `Profile write ${revision} should remain within the rate limit.`);
+  }
+  const response = await f.request('/api/account', { ...login, method: 'PATCH', body: {
+    displayName: 'Creator', bio: '', preferredFramework: 'Standalone', density: 'comfortable', version: 91,
+  } });
+  assert.equal(response.status, 429); assert.equal(f.store.user(login.user.id).version, 91);
+});
+
+test('a committed brief creation with a lost HTTP acknowledgement replays without another row', async t => {
+  const f = await fixture(t), login = await f.login(), body = { ...brief, requestId: randomUUID() };
+  const loseAcknowledgement = (request, response) => {
+    if (request.method === 'POST' && request.url === '/api/briefs') {
+      f.app.off('request', loseAcknowledgement);
+      response.end = () => { response.destroy(); return response; };
+    }
+  };
+  f.app.on('request', loseAcknowledgement);
+  await assert.rejects(f.request('/api/briefs', { ...login, method: 'POST', body }));
+  assert.equal(f.store.count(login.user.id), 1);
+  const id = f.store.list(login.user.id)[0].id;
+  const retry = await f.request('/api/briefs', { ...login, method: 'POST', body });
+  assert.equal(retry.status, 200);
+  const data = await retry.json();
+  assert.equal(data.briefId, id); assert.equal(data.requestId, body.requestId);
+  assert.equal(data.replayed, true); assert.equal(data.deleted, false);
+  assert.equal(data.briefs.length, 1); assert.equal(f.store.count(login.user.id), 1);
+  assert.equal(f.store.db.prepare('SELECT count(*) n FROM brief_create_requests').get().n, 1);
+});
+
+test('brief creation receipts compare normalized content and reject request ID reuse for different content', async t => {
+  const f = await fixture(t), login = await f.login(), body = { ...brief, requestId: randomUUID() };
+  const first = await f.request('/api/briefs', { ...login, method: 'POST', body });
+  assert.equal(first.status, 201); const created = await first.json();
+  assert.equal(created.replayed, false); assert.equal(created.deleted, false);
+  const repeated = await f.request('/api/briefs', { ...login, method: 'POST', body: { ...body, name: `  ${brief.name} `, requirements: ` ${brief.requirements} `, requestId: body.requestId.toUpperCase() } });
+  assert.equal(repeated.status, 200); assert.equal((await repeated.json()).briefId, created.briefId);
+  for (const change of [{ name: 'Different' }, { requirements: 'Different' }, { toolId: 'discord-bot-generator' }, { target: 'Standalone' }]) {
+    assert.equal((await f.request('/api/briefs', { ...login, method: 'POST', body: { ...body, ...change } })).status, 409);
+  }
+  assert.equal(f.store.count(login.user.id), 1);
+});
+
+test('concurrent brief creation retries create one row while request IDs remain account scoped', async t => {
+  const f = await fixture(t), a = await f.login(), b = await f.login('other'), body = { ...brief, requestId: randomUUID() };
+  const responses = await Promise.all([1, 2, 3].map(() => f.request('/api/briefs', { ...a, method: 'POST', body })));
+  assert.deepEqual(responses.map(response => response.status).sort(), [200, 200, 201]);
+  const replies = await Promise.all(responses.map(response => response.json()));
+  assert.ok(replies.every(data => data.briefId === replies[0].briefId));
+  assert.equal(f.store.count(a.user.id), 1);
+  const other = await f.request('/api/briefs', { ...b, method: 'POST', body });
+  assert.equal(other.status, 201); const separate = await other.json();
+  assert.notEqual(separate.briefId, replies[0].briefId);
+  assert.equal(separate.briefs.length, 1); assert.equal(f.store.count(b.user.id), 1);
+});
+
+test('brief replay does not overwrite subsequent edits or resurrect a later deleted brief', async t => {
+  const f = await fixture(t), login = await f.login(), body = { ...brief, requestId: randomUUID() };
+  const created = await (await f.request('/api/briefs', { ...login, method: 'POST', body })).json();
+  const path = `/api/briefs/${created.briefId}`;
+  assert.equal((await f.request(path, { ...login, method: 'PATCH', body: { ...brief, name: 'Newer saved name', version: 1 } })).status, 200);
+  const replay = await (await f.request('/api/briefs', { ...login, method: 'POST', body })).json();
+  assert.equal(replay.briefId, created.briefId); assert.equal(replay.briefs[0].name, 'Newer saved name');
+  assert.equal(replay.briefs[0].version, 2);
+  assert.equal((await f.request(path, { ...login, method: 'DELETE', body: { version: 2 } })).status, 200);
+  const deleted = await f.request('/api/briefs', { ...login, method: 'POST', body });
+  assert.equal(deleted.status, 200); const result = await deleted.json();
+  assert.equal(result.deleted, true); assert.equal(result.replayed, true); assert.equal(result.briefId, created.briefId);
+  assert.deepEqual(result.briefs, []); assert.equal(f.store.count(login.user.id), 0);
+  assert.equal((await f.request('/api/briefs', { ...login, method: 'POST', body: { ...body, name: 'Changed tombstone request' } })).status, 409);
+  const fresh = await f.request('/api/briefs', { ...login, method: 'POST', body: { ...body, requestId: randomUUID() } });
+  assert.equal(fresh.status, 201); assert.notEqual((await fresh.json()).briefId, created.briefId);
+});
+
+test('brief creation receipts survive API/database restart and replay at the account brief limit', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'ndai-brief-receipt-')), database = join(directory, 'studio.sqlite');
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const first = await fixture(t, database), login = await first.login(), body = { ...brief, requestId: randomUUID() };
+  const created = await (await first.request('/api/briefs', { ...login, method: 'POST', body })).json();
+  for (let i = 0; i < 99; i++) first.store.create(login.user.id, { ...brief, name: `Other ${i}` });
+  await first.close();
+  const next = await fixture(t, database), again = await next.login();
+  const replay = await next.request('/api/briefs', { ...again, method: 'POST', body });
+  assert.equal(replay.status, 200); const data = await replay.json();
+  assert.equal(data.briefId, created.briefId); assert.equal(data.briefs.length, 100);
+  assert.equal(next.store.db.prepare('PRAGMA user_version').get().user_version, 1);
+  assert.equal(next.store.db.prepare('SELECT count(*) n FROM brief_create_requests').get().n, 1);
+  assert.equal((await next.request('/api/briefs', { ...again, method: 'POST', body: { ...body, requestId: randomUUID() } })).status, 409);
+});
+
+test('brief creation and its receipt roll back together, preserving safe retries', async t => {
+  const f = await fixture(t), login = await f.login(), body = { ...brief, requestId: randomUUID() };
+  f.store.db.exec("CREATE TRIGGER fail_brief_receipt BEFORE INSERT ON brief_create_requests BEGIN SELECT RAISE(ABORT,'fixture receipt failure'); END");
+  assert.equal((await f.request('/api/briefs', { ...login, method: 'POST', body })).status, 500);
+  assert.equal(f.store.count(login.user.id), 0);
+  assert.equal(f.store.db.prepare('SELECT count(*) n FROM brief_create_requests').get().n, 0);
+  f.store.db.exec('DROP TRIGGER fail_brief_receipt');
+  assert.equal((await f.request('/api/briefs', { ...login, method: 'POST', body })).status, 201);
+  assert.equal(f.store.count(login.user.id), 1);
+});
+
+test('brief creation request IDs are optional, validated and separate from imported source IDs', async t => {
+  const f = await fixture(t), login = await f.login(), requestId = randomUUID();
+  for (const invalid of [null, 42, '', 'not-a-uuid', '../request']) {
+    assert.equal((await f.request('/api/briefs', { ...login, method: 'POST', body: { ...brief, requestId: invalid } })).status, 400);
+  }
+  const legacy = await f.request('/api/briefs', { ...login, method: 'POST', body: brief });
+  assert.equal(legacy.status, 201); assert.deepEqual(Object.keys(await legacy.json()), ['briefs']);
+  assert.equal((await f.request('/api/briefs/import', { ...login, method: 'POST', body: { briefs: [{ ...brief, sourceId: requestId }] } })).status, 200);
+  const fresh = await f.request('/api/briefs', { ...login, method: 'POST', body: { ...brief, requestId } });
+  assert.equal(fresh.status, 201); assert.equal(f.store.count(login.user.id), 3);
+  assert.equal(f.store.db.prepare('SELECT count(*) n FROM brief_create_requests').get().n, 1);
+  const unauthorized = await f.request('/api/briefs', { ...login, csrf: '', method: 'POST', body: { ...brief, requestId } });
+  assert.equal(unauthorized.status, 403); assert.equal(f.store.count(login.user.id), 3);
+});
+
+test('adding the brief creation ledger preserves existing databases and import identities', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'ndai-brief-migration-')), database = join(directory, 'studio.sqlite');
+  try {
+    let store = new Store(database);
+    const user = store.login({ id: '123456789012345678', username: 'creator', displayName: 'Creator', avatar: null });
+    const id = store.create(user.id, brief, 'existing-import');
+    store.db.exec('DROP TABLE brief_create_requests'); store.close();
+    store = new Store(database);
+    assert.equal(store.db.prepare('PRAGMA user_version').get().user_version, 1);
+    assert.equal(store.list(user.id)[0].id, id);
+    assert.equal(store.db.prepare('SELECT source_id FROM briefs WHERE id=?').get(id).source_id, 'existing-import');
+    assert.equal(store.db.prepare('SELECT count(*) n FROM brief_create_requests').get().n, 0); store.close();
+  } finally { rmSync(directory, { recursive: true, force: true }); }
 });
