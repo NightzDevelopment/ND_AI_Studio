@@ -30,11 +30,13 @@ export async function runJob(job,{ key,image,api,generator=generate,validator=va
   try {
     controller.signal.throwIfAborted();
     await progress('checking','Checking validator readiness before any paid provider request.');
+    controller.signal.throwIfAborted();
     await preflight(job.project.tool_id,{image,signal:controller.signal});
     let files=job.project.files,summary='',checks=[];
     for (let attempt=0;attempt<job.settings.maxCalls;attempt++) {
       controller.signal.throwIfAborted();
       await progress(attempt ? 'repairing' : 'generating',attempt ? 'Repairing reported syntax or packaging errors within the remaining budget.' : `Sending the approved project snapshot to ${providerLabel(job.settings)} model ${job.settings.model}.`);
+      controller.signal.throwIfAborted();
       if (reserveFor(providerPayload(job,files,checks),job.settings)+cost > job.settings.maxBudgetMicros) {
         completion={...auth,costMicros:cost,result:{error:'The conservative cost estimate exceeds the remaining build budget. No further provider request was sent.'}}; break;
       }
@@ -43,9 +45,10 @@ export async function runJob(job,{ key,image,api,generator=generate,validator=va
       uncertain=false; cost+=generated.cost; files=generated.files; summary=generated.summary;
       controller.signal.throwIfAborted();
       await progress('checking','Checking project structure and syntax in an offline, resource-limited container.');
+      controller.signal.throwIfAborted();
       const result=await validator(files,job.project.tool_id,{image,signal:controller.signal}); checks=result.checks;
       controller.signal.throwIfAborted();
-      if (result.kind === 'infrastructure') {
+      if (result.kind === 'infrastructure' || (!result.ok && result.kind!=='source')) {
         const failure=new Error('Validator infrastructure failed. No AI repair was requested.'); failure.status=503; throw failure;
       }
       if (result.ok) {
@@ -92,7 +95,11 @@ export async function main(env=process.env) {
         if (job) {
           const provider=job.settings.provider ?? 'openai';
           if (!providers.includes(provider)) throw new Error('The claimed provider is not configured on this worker.');
-          await runJob(job,{key:keys[provider],image:env.VALIDATOR_IMAGE,api,signal:stop.signal});
+          try { await runJob(job,{key:keys[provider],image:env.VALIDATOR_IMAGE,api,signal:stop.signal}); }
+          catch (error) {
+            // Cancellation, revocation and expired leases end this job, not worker readiness.
+            if (error?.status!==409) throw error;
+          }
         }
         else await delay(3000,undefined,{signal:stop.signal});
       } catch {

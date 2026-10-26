@@ -96,13 +96,24 @@ async function readLimited(response, max) {
   return JSON.parse(Buffer.concat(parts).toString('utf8'));
 }
 export async function generate(job, files, { key, signal, spent=0, diagnostics=[], fetcher=fetch } = {}) {
-  insist(typeof key === 'string' && key.length>10,503,'AI provider credentials are not configured.');
-  const payload=providerPayload(job,files,diagnostics), reserve=reserveFor(payload,job.settings);
-  insist(reserve+spent <= job.settings.maxBudgetMicros,409,'The conservative cost estimate exceeds this build budget. Reduce project size or ask the owner to adjust the limit.');
-  const response=await fetcher(provider(job.settings).endpoint,{
-    method:'POST', redirect:'error', headers:{ authorization:`Bearer ${key}`,'content-type':'application/json' },
-    body:JSON.stringify(payload), signal:AbortSignal.any([signal || new AbortController().signal,AbortSignal.timeout((job.settings.timeoutSeconds ?? 180)*1000)]),
-  });
+  let endpoint,request;
+  try {
+    signal?.throwIfAborted();
+    insist(typeof key === 'string' && key.length>10,503,'AI provider credentials are not configured.');
+    const payload=providerPayload(job,files,diagnostics), reserve=reserveFor(payload,job.settings);
+    insist(reserve+spent <= job.settings.maxBudgetMicros,409,'The conservative cost estimate exceeds this build budget. Reduce project size or ask the owner to adjust the limit.');
+    endpoint=provider(job.settings).endpoint;
+    request={
+      method:'POST', redirect:'error', headers:{ authorization:`Bearer ${key}`,'content-type':'application/json' },
+      body:JSON.stringify(payload), signal:AbortSignal.any([signal || new AbortController().signal,AbortSignal.timeout((job.settings.timeoutSeconds ?? 180)*1000)]),
+    };
+    request.signal.throwIfAborted();
+  } catch (error) {
+    // Preparation and pre-dispatch cancellation cannot have incurred provider usage.
+    const failure=error && typeof error==='object' ? error : new Error('Provider request preparation failed.');
+    failure.providerCostMicros=0; throw failure;
+  }
+  const response=await fetcher(endpoint,request);
   // Do not retry POSTs automatically: an interrupted request may already have incurred usage.
   insist(response.ok,502,`AI provider request failed (${response.status}). It was not automatically retried.`);
   const data=await readLimited(response,2097152), cost=price(data.usage,job.settings);

@@ -7,12 +7,15 @@ import { randomBytes } from 'node:crypto';
 import { validateFiles, insist } from '../server/studio-domain.mjs';
 const exec = promisify(execFile);
 const options = { timeout:10000,maxBuffer:65536,env:{ ...process.env,DOCKER_CLI_HINTS:'false' } };
-export async function validatorReady(image, runner=exec) {
+export async function validatorReady(image, runner=exec, {signal}={}) {
+  signal?.throwIfAborted();
   insist(typeof image === 'string' && /^sha256:[a-f0-9]{64}$/.test(image),503,'Pin VALIDATOR_IMAGE to a locally built immutable image ID.');
-  const {stdout}=await runner('docker',['info','--format','{{json .}}'],options);
+  const {stdout}=await runner('docker',['info','--format','{{json .}}'],{...options,signal});
+  signal?.throwIfAborted();
   const info=JSON.parse(stdout);
   insist(info.SecurityOptions?.some(value=>value.includes('rootless')) && info.CgroupVersion === '2' && info.CgroupDriver === 'systemd',503,'An isolated rootless Docker worker with cgroup v2/systemd is required.');
-  const result=await runner('docker',['image','inspect',image,'--format','{{.Id}}'],options);
+  const result=await runner('docker',['image','inspect',image,'--format','{{.Id}}'],{...options,signal});
+  signal?.throwIfAborted();
   insist(result.stdout.trim() === image,503,'Validator image is not present.');
   return true;
 }
@@ -24,7 +27,8 @@ export function dockerArguments(image,name,directory,tool) {
     '--mount',`type=bind,src=${directory},dst=/workspace,readonly`,'--workdir','/workspace',image,tool];
 }
 export async function validate(files,tool,{image,signal,runner=exec}={}) {
-  files=validateFiles(files); await validatorReady(image,runner);
+  signal?.throwIfAborted();
+  files=validateFiles(files); await validatorReady(image,runner,{signal});
   const directory=await mkdtemp(join(tmpdir(),'nd-ai-check-')), name=`nd-ai-check-${randomBytes(12).toString('hex')}`;
   const workspace=join(directory,'workspace');
   try {
@@ -33,6 +37,7 @@ export async function validate(files,tool,{image,signal,runner=exec}={}) {
     await chmod(directory,0o700);
     await mkdir(workspace,{mode:0o755}); await chmod(workspace,0o755);
     for (const file of files) {
+      signal?.throwIfAborted();
       const parts=file.path.split('/'); let parent=workspace;
       for (const part of parts.slice(0,-1)) {
         parent=join(parent,part); await mkdir(parent,{recursive:true,mode:0o755});
@@ -42,10 +47,16 @@ export async function validate(files,tool,{image,signal,runner=exec}={}) {
       await writeFile(target,file.content,{mode:0o644,flag:'wx'});
       await chmod(target,0o644);
     }
-    const {stdout}=await runner('docker',dockerArguments(image,name,workspace,tool),{...options,timeout:30000,signal});
+    signal?.throwIfAborted();
+    // Keep all permitted source diagnostics. The readiness-command buffer is
+    // smaller than valid output for 64 failing files; the response stays bounded.
+    const {stdout}=await runner('docker',dockerArguments(image,name,workspace,tool),{...options,timeout:30000,maxBuffer:2097152,signal});
+    signal?.throwIfAborted();
     const result=JSON.parse(stdout);
-    insist(typeof result.ok === 'boolean' && Array.isArray(result.checks) && result.checks.every(check=>typeof check==='string' && check.length<=2000),502,'Validator returned invalid results.');
-    if (result.kind === 'infrastructure' || result.checks.includes('Validator could not inspect the project.')) {
+    const valid=result && typeof result.ok==='boolean' && ['ok','source','infrastructure'].includes(result.kind)
+      && result.ok === (result.kind==='ok') && Array.isArray(result.checks) && result.checks.length<=100
+      && result.checks.every(check=>typeof check==='string' && check.length<=2000) && (result.ok || result.checks.length>0);
+    if (!valid || result.kind === 'infrastructure' || result.checks.includes('Validator could not inspect the project.')) {
       const error=new Error('Validator infrastructure failed. Check the worker image and source permissions. No AI repair was requested.');
       error.status=503; error.code='VALIDATOR_INFRASTRUCTURE'; throw error;
     }

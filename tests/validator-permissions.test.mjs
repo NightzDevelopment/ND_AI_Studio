@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import { mkdtemp,writeFile,mkdir,chmod,rm,stat,access } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join,dirname } from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawnSync,execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { createRequire } from 'node:module';
 import { validate,validateEnvironment,dockerArguments } from '../worker/validate.mjs';
 import { runJob } from '../worker/start.mjs';
@@ -55,10 +56,64 @@ test('inspector distinguishes source syntax errors from missing parser tools',as
   const syntax=inspectProject(directory,'ai-script-generator',()=>({status:1,stderr:'syntax error'}));assert.equal(syntax.kind,'source');
   const infrastructure=inspectProject(directory,'ai-script-generator',()=>({status:null,error:{code:'ENOENT'}}));assert.equal(infrastructure.kind,'infrastructure');
 });
+test('bot validation rejects every npm install lifecycle hook without executing project entry points',async t=>{
+  const directory=await mkdtemp(join(tmpdir(),'nd-install-hooks-'));t.after(()=>rm(directory,{recursive:true,force:true}));
+  const marker=join(directory,'executed.txt');
+  const parser=(command,args,options)=>spawnSync(command==='node'?process.execPath:command,args,options);
+  await writeFile(join(directory,'README.md'),'# Installation notes');
+  await writeFile(join(directory,'index.js'),`require('node:fs').writeFileSync(${JSON.stringify(marker)},'Executed');`);
+  for(const hook of ['preinstall','install','postinstall','prepublish','preprepare','prepare','postprepare','predependencies','dependencies','postdependencies']){
+    await writeFile(join(directory,'package.json'),JSON.stringify({main:'index.js',dependencies:{'discord.js':'^14.0.0'},scripts:{[hook]:'node index.js'}}));
+    const result=inspectProject(directory,'discord-bot-generator',parser);
+    assert.equal(result.ok,false,hook);assert.equal(result.kind,'source');
+    assert.ok(result.checks.includes('Package installation lifecycle scripts are not allowed.'),hook);
+    await assert.rejects(access(marker));
+  }
+  await writeFile(join(directory,'package.json'),JSON.stringify({main:'index.js',dependencies:{'discord.js':'^14.0.0'},scripts:{start:'node index.js',test:'node --test'}}));
+  assert.equal(inspectProject(directory,'discord-bot-generator',parser).ok,true);
+  await assert.rejects(access(marker));
+});
 test('infrastructure response and legacy unreadable response fail without source repair',async()=>{
   for(const result of [{ok:false,kind:'infrastructure',checks:['Unreadable.']},{ok:false,checks:['Validator could not inspect the project.']}]){
     await assert.rejects(validate(files,'ai-script-generator',{image,runner:async(_,args)=>args[0]==='info'?info():args[0]==='image'?{stdout:image}:{stdout:JSON.stringify(result)}}),error=>error.code==='VALIDATOR_INFRASTRUCTURE');
   }
+});
+test('malformed validator classifications stop as infrastructure failures without paying for source repair',async()=>{
+  const malformed=[null,{ok:false,kind:'unexpected',checks:['Validator failed.']},{ok:false,kind:'ok',checks:['Contradictory state.']},
+    {ok:true,kind:'source',checks:['Contradictory state.']},{ok:false,kind:'source',checks:[]},{ok:true,kind:'ok',checks:Array(101).fill('Too many results.')}];
+  for(const result of malformed){
+    let generated=0;const completions=[];
+    await runJob(job,{image,preflight:async()=>{},generator:async()=>{generated++;return {files,summary:'Source',cost:123};},
+      validator:(source,tool,options)=>validate(source,tool,{...options,runner:async(_,args)=>args[0]==='info'?info():args[0]==='image'?{stdout:image}:args[0]==='run'?{stdout:JSON.stringify(result)}:{stdout:''}}),
+      api:async(path,body)=>{if(path==='/api/worker/complete')completions.push(body);return {};}
+    });
+    assert.equal(generated,1);assert.equal(completions.length,1);assert.equal(completions[0].costMicros,123);
+    assert.match(completions[0].result.error,/infrastructure/);assert.equal(completions[0].result.files,undefined);
+  }
+});
+test('bounded diagnostics for 64 source files remain available for repair without a false output-buffer failure',async()=>{
+  const result={ok:false,kind:'source',checks:Array.from({length:64},(_,index)=>`client/file_${index}.lua: ${'syntax '.repeat(200)}`)};
+  const raw=JSON.stringify(result);assert.ok(Buffer.byteLength(raw)>65536);
+  const exec=promisify(execFile);
+  const checked=await validate(files,'ai-script-generator',{image,runner:async(_,args,options)=>{
+    if(args[0]==='info')return info();if(args[0]==='image')return {stdout:image};
+    if(args[0]==='run')return exec(process.execPath,['-e','process.stdout.write(process.argv[1])',raw],options);
+    return {stdout:''};
+  }});
+  assert.equal(checked.kind,'source');assert.deepEqual(checked.checks,result.checks);
+});
+test('validator cancellation prevents Docker commands before readiness and container startup',async()=>{
+  const stopped=new AbortController();stopped.abort();let calls=0;
+  await assert.rejects(validate(files,'ai-script-generator',{image,signal:stopped.signal,runner:async()=>{calls++;return info();}}),error=>error.name==='AbortError');
+  assert.equal(calls,0);
+  const stop=new AbortController(),commands=[];
+  await assert.rejects(validate(files,'ai-script-generator',{image,signal:stop.signal,runner:async(_,args,options)=>{
+    commands.push(args[0]);assert.equal(options.signal,stop.signal);
+    if(args[0]==='info')return info();
+    if(args[0]==='image'){stop.abort();return {stdout:image};}
+    throw new Error('Container startup after cancellation');
+  }}),error=>error.name==='AbortError');
+  assert.deepEqual(commands,['info','image']);
 });
 test('preflight exercises nested source staging and never calls a provider',async()=>{
   let checked=false;await validateEnvironment('ai-script-generator',{image,runner:async(_,args)=>{
