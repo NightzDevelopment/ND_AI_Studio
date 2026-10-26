@@ -15,7 +15,7 @@ for (const file of ['index.html', 'workspace.html', 'account.js']) {
 const policies = renderPolicyPages();
 await rm(output, { recursive: true, force: true });
 await mkdir(output, { recursive: true });
-for (const file of ['index.html', 'styles.css', 'app.js', 'data.js', 'account.js', 'account.css', 'controls.js', 'workspace.html', 'workspace.css', 'workspace.js', 'workspace-drafts.js', 'models.js', 'models.css', 'billing.js', 'branding.css', 'legal.css', 'nd-logo.webp', 'favicon.png', 'favicon.ico']) {
+for (const file of ['index.html', 'styles.css', 'app.js', 'data.js', 'account.js', 'account.css', 'controls.js', 'workspace.html', 'workspace.css', 'workspace.js', 'workspace-drafts.js', 'models.js', 'models.css', 'billing.js', 'branding.css', 'legal.css', 'nd-logo.webp', 'favicon.png', 'favicon.ico', 'agent.html', 'agent.js', 'agent.css']) {
   if (transformed.has(file)) await writeFile(new URL(file, output), transformed.get(file));
   else await copyFile(new URL(`web/${file}`, root), new URL(file, output));
 }
