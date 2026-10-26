@@ -4,6 +4,7 @@ import { realpathSync } from 'node:fs';
 import { generate, providerPayload, reserveFor, providerLabel, configuredProviders } from './provider.mjs';
 import { validate, validatorReady, validateEnvironment } from './validate.mjs';
 import { createPreviewPublisher } from './code-preview.mjs';
+import { runAgentTask } from './agent.mjs';
 
 async function deliverCompletion(api,body,wait) {
   // This receipt is safe to replay. Provider requests and generation are never retried here.
@@ -90,7 +91,7 @@ export async function main(env=process.env) {
   const stop=new AbortController(); for (const name of ['SIGINT','SIGTERM']) process.once(name,()=>stop.abort());
   const api=async(path,body,{signal:requestSignal,timeout=15000}={})=>{
     const timeoutSignal=AbortSignal.timeout(timeout),signal=requestSignal?AbortSignal.any([requestSignal,timeoutSignal]):timeoutSignal;
-    const response=await fetch(`${origin.origin}${path}`,{method:'POST',redirect:'error',signal,headers:{authorization:`Bearer ${env.STUDIO_WORKER_TOKEN}`,'content-type':'application/json'},body:JSON.stringify(body)});
+    const response=await fetch(`${origin.origin}${path}`,{method:'POST',redirect:'error',signal,headers:{authorization:`Bearer ${env.STUDIO_WORKER_TOKEN}`,'content-type':'application/json','x-nd-studio-agent':'1'},body:JSON.stringify(body)});
     if (!response.ok) { const error=new Error(`Worker API status ${response.status}.`); error.status=response.status; throw error; }
     const raw=await response.text(); if (raw.length>2097152) throw new Error('Worker response is too large.'); return JSON.parse(raw);
   };
@@ -105,7 +106,7 @@ export async function main(env=process.env) {
         if (job) {
           const provider=job.settings.provider ?? 'openai';
           if (!providers.includes(provider)) throw new Error('The claimed provider is not configured on this worker.');
-          try { await runJob(job,{key:keys[provider],image:env.VALIDATOR_IMAGE,api,signal:stop.signal}); }
+          try { await (job.agent ? runAgentTask : runJob)(job,{key:keys[provider],image:env.VALIDATOR_IMAGE,api,signal:stop.signal}); }
           catch (error) {
             // Cancellation, revocation and expired leases end this job, not worker readiness.
             if (error?.status!==409) throw error;

@@ -18,7 +18,7 @@ function fixture(t) {
   const release = join(directory, 'releases', 'release #1');
   mkdirSync(join(release, 'worker'), { recursive: true, mode: 0o700 });
   mkdirSync(join(release, 'server'), { mode: 0o700 });
-  for (const name of ['worker/start.mjs', 'worker/provider.mjs', 'worker/validate.mjs', 'worker/code-preview.mjs', 'server/studio-domain.mjs']) {
+  for (const name of ['worker/start.mjs', 'worker/provider.mjs', 'worker/validate.mjs', 'worker/code-preview.mjs', 'worker/agent.mjs', 'worker/agent-provider.mjs', 'server/studio-domain.mjs']) {
     copyFileSync(new URL(name, root), join(release, name));
   }
   const current = join(directory, 'current');

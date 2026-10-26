@@ -123,7 +123,7 @@ export function createModels({store,actor,readJson,json,workerReady=()=>true,sub
   }
   function recover() {
     // Complete any interrupted settlement without replaying provider requests.
-    const rows=store.db.prepare("SELECT c.job_id,j.status,j.cost FROM studio_job_credits c JOIN studio_jobs j ON j.id=c.job_id WHERE c.state='reserved' AND j.status NOT IN ('queued','running')").all();
+    const rows=store.db.prepare("SELECT c.job_id,j.status,j.cost FROM studio_job_credits c JOIN studio_jobs j ON j.id=c.job_id WHERE c.state='reserved' AND j.status NOT IN ('queued','running','agent')").all();
     if (rows.length) store.transaction(()=>{
       for (const row of rows) settle(row.job_id,['review','applied'].includes(row.status)?'charged':row.cost===0?'released':'pending');
     });

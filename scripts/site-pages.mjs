@@ -14,7 +14,7 @@ export function renderSiteAsset(file, source) {
     source = replaceOnce(source, '</head>', brandHead + '</head>', `${file} head`);
     const mark = file === 'index.html' ? '<span class="brand-mark">N<span>D</span></span>' : '<b>N<span>D</span></b>';
     source = replaceOnce(source, mark, logo, `${file} logo`);
-    source = replaceOnce(source, '</footer>', policyLinks + '</footer>', `${file} footer`);
+    source = replaceOnce(source, '</footer>', '<a href="/agent.html">Live agent / owner preview</a>' + policyLinks + '</footer>', `${file} footer`);
     if (file === 'workspace.html') {
       const login = '<a class="primary" href="/auth/discord">Continue with Discord</a>';
       source = replaceOnce(source, login, login + policyNotice, 'workspace login');

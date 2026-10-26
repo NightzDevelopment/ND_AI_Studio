@@ -102,7 +102,7 @@ export function createSubscriptions({store,config,actor,readJson,json,fetcher=fe
     store.db.prepare('UPDATE studio_subscription_jobs SET charged=?,state=? WHERE job_id=?').run(charged,delivered?'charged':'released',jobId);
   }
   function recover() {
-    const rows=store.db.prepare("SELECT j.id,j.status,j.cost,j.result FROM studio_subscription_jobs c JOIN studio_jobs j ON j.id=c.job_id WHERE c.state='reserved' AND j.status NOT IN ('queued','running')").all();
+    const rows=store.db.prepare("SELECT j.id,j.status,j.cost,j.result FROM studio_subscription_jobs c JOIN studio_jobs j ON j.id=c.job_id WHERE c.state='reserved' AND j.status NOT IN ('queued','running','agent')").all();
     if(rows.length)store.transaction(()=>{for(const row of rows)settle(row.id,['applied','review'].includes(row.status),row.cost,!JSON.parse(row.result || '{}').accounting);});
   }
   function history(userId) {

@@ -1,7 +1,7 @@
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 const root = new URL('../dist/', import.meta.url);
-const files = { '/': ['index.html', 'text/html'], '/index.html': ['index.html', 'text/html'],
+const files = { '/agent.html': ['agent.html', 'text/html'], '/agent.js': ['agent.js', 'text/javascript'], '/agent.css': ['agent.css', 'text/css'], '/': ['index.html', 'text/html'], '/index.html': ['index.html', 'text/html'],
   '/app.js': ['app.js', 'text/javascript'], '/data.js': ['data.js', 'text/javascript'],
   '/styles.css': ['styles.css', 'text/css'], '/catalog.json': ['catalog.json', 'application/json'],
   '/account.js': ['account.js', 'text/javascript'], '/account.css': ['account.css', 'text/css'],

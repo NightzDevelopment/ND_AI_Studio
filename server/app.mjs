@@ -3,6 +3,7 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { isIP } from 'node:net';
 import { authorizeUrl, discordIdentity } from './discord.mjs';
 import { createStudio } from './studio.mjs';
+import { createAgent } from './agent.mjs';
 
 export const FRAMEWORKS = ['Standalone', 'ND_Framework', 'ESX', 'QBCore', 'Qbox', 'vRP', 'ox_core', 'Custom'];
 export const hash = value => createHash('sha256').update(value).digest('hex');
@@ -126,6 +127,7 @@ export function createApp({ config, store, catalog, identity = discordIdentity, 
     return session;
   }
   const studio = createStudio({ store, config, catalog, required, mutation, readJson, json });
+  const agent = createAgent({ store, config, required, mutation, readJson, json });
   const server = createServer({ maxHeaderSize: 16384, requestTimeout: 30000, headersTimeout: 15000 }, async (req, res) => {
     res.setHeader('cache-control', 'no-store');
     res.setHeader('x-content-type-options', 'nosniff');
@@ -135,6 +137,7 @@ export function createApp({ config, store, catalog, identity = discordIdentity, 
       const url = new URL(req.url, config.origin);
       const path = url.pathname, method = req.method;
       rate(req, 'all', 240, 60000);
+      if (await agent.route(req, res, url)) return;
       if (await studio.route(req, res, url)) return;
       if (method === 'GET' && path === '/api/health') {
         store.db.prepare('SELECT 1').get();
