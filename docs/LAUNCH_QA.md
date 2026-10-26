@@ -14,7 +14,7 @@ This update improves the existing release 0.3. No production deployment, provide
 
 ## Local verification
 
-Node 24.19.0, Python 3.12, Playwright 1.62.0 and system Chromium were used. The application requires Node 22.16 or newer; the CI workflow selects Node 22. No separate lint or type-check command is configured.
+Node 24.19.0, Python 3.12, Playwright 1.62.0 and system Chromium were used. The full 250-test Node suite and all 22 real local API browser journeys also passed on the minimum supported Node 22.16.0. Its 23 production assets are byte-identical to the Node 24 build. The CI workflow selects Node 22; local compatibility checks do not establish a hosted CI pass. No separate lint or type-check command is configured.
 
 | Check | Result |
 | --- | --- |
