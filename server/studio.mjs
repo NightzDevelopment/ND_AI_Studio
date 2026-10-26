@@ -3,8 +3,9 @@ import { StudioError, insist, fields, string, integer, digest, validateFiles, fi
 import { createModels } from './studio-models.mjs';
 import { memberRoles, discordRequest } from './studio-discord.mjs';
 
-export function createStudio({ store, config, catalog, required, mutation, readJson, json, fetcher = fetch }) {
+export function createStudio({ store, config, catalog, required, mutation, readJson:readBody, json, fetcher = fetch }) {
   migrateStudio(store);
+  const actors = new WeakMap();
   const models = createModels({store,actor,readJson,json,workerReady});
   const owners = new Set(config.ownerIds || []);
   const isOwner = user => Boolean(user && owners.has(user.discord_id));
@@ -21,17 +22,33 @@ export function createStudio({ store, config, catalog, required, mutation, readJ
     return workerReady() ? workerProviders() : [];
   }
   async function actor(req, write = false, permission = null) {
-    const session = write ? mutation(req) : required(req), user = store.user(session.user_id);
+    const previous = actors.get(req);
+    const session = write ? mutation(req,previous?.session) : required(req), user = store.user(session.user_id);
+    if (previous) insist(session.user_id === previous.session.user_id && session.hash === previous.session.hash,401,'Your session changed. Sign in again before continuing.');
     insist(user && !blocked(user.id), 403, 'This Studio account is suspended.');
-    let permissions = [];
-    if (isOwner(user)) permissions = [...PERMISSIONS];
-    else if (permission || !write) {
-      const roles = await memberRoles(store, config, user, { refresh: write, fetcher });
-      const mappings = studioSettings(store).roleMappings;
-      permissions = [...new Set(roles.flatMap(role => mappings[role] || []))];
+    let roles = [], guildId = null;
+    if (!isOwner(user) && (permission || !write)) {
+      guildId = studioSettings(store).guildId;
+      roles = await memberRoles(store, config, user, { refresh: write, fetcher });
     }
-    if (permission) insist(permissions.includes(permission), 403, 'You do not have permission for this action.');
-    return { user, permissions, owner: isOwner(user) };
+    const check = () => {
+      const current = write ? mutation(req,session) : required(req);
+      insist(current.user_id === session.user_id && current.hash === session.hash,401,'Your session changed. Sign in again before continuing.');
+      const user = store.user(current.user_id), settings = studioSettings(store);
+      insist(user && !blocked(user.id),403,'This Studio account is suspended.');
+      insist(guildId === null || settings.guildId === guildId,409,'Discord configuration changed. Retry with current permissions.');
+      const permissions = isOwner(user) ? [...PERMISSIONS] : [...new Set(roles.flatMap(role => settings.roleMappings[role] || []))];
+      if (permission) insist(permissions.includes(permission),403,'You do not have permission for this action.');
+      return { user, permissions, owner:isOwner(user) };
+    };
+    const result = Object.assign(previous || {},check(),{session,write,permission,check});
+    actors.set(req,result);
+    return result;
+  }
+  async function readJson(req,limit) {
+    const body = await readBody(req,limit), proof = actors.get(req);
+    if (proof) await actor(req,proof.write,proof.permission);
+    return body;
   }
   function allowed(toolId, user) {
     const mode = studioSettings(store).tools[toolId];
@@ -171,6 +188,7 @@ export function createStudio({ store, config, catalog, required, mutation, readJ
       }
       if (method === 'POST' && path === '/api/studio/roles/refresh') {
         const a = await actor(req,true); await memberRoles(store,config,a.user,{ refresh:true,fetcher });
+        a.check();
         json(res,200,{ ok:true }); return true;
       }
       if (path.startsWith('/api/admin')) {
@@ -183,6 +201,7 @@ export function createStudio({ store, config, catalog, required, mutation, readJ
           insist(a.owner,403,'Only the configured owner can change role mappings and provider settings.');
           const body = await readJson(req), next = settingsData(body); integer(body.version,1,1000000000,'settings revision');
           store.transaction(() => {
+            a.check();
             insist(store.db.prepare('UPDATE studio_settings SET value=?,version=version+1 WHERE id=1 AND version=?').run(JSON.stringify(next),body.version).changes,409,'Settings changed. Reload before saving.');
             store.db.prepare('DELETE FROM studio_roles').run(); audit(store,a.user.id,'settings.update','studio');
           });
@@ -192,6 +211,7 @@ export function createStudio({ store, config, catalog, required, mutation, readJ
           insist(a.owner,403,'Only the owner can test the bot connection.');
           const s=studioSettings(store); insist(s.guildId,400,'Set a Discord guild ID first.');
           const bot=await discordRequest(config,'/users/@me',fetcher), guild=await discordRequest(config,`/guilds/${s.guildId}`,fetcher);
+          a.check();
           insist(bot?.bot && guild?.id === s.guildId,503,'The bot is not installed in this guild.');
           audit(store,a.user.id,'discord.test',s.guildId);
           json(res,200,{ bot:{ id:bot.id,username:bot.username },guild:{ id:guild.id,name:guild.name } }); return true;
@@ -204,6 +224,7 @@ export function createStudio({ store, config, catalog, required, mutation, readJ
           insist(IMPLEMENTED_TOOLS.includes(body.toolId) && ['disabled','owner','members'].includes(body.mode),400,'Invalid tool mode.');
           insist(a.owner || body.mode !== 'members',403,'Only the owner can release generation to members.');
           store.transaction(() => {
+            a.check();
             const s=studioSettings(store); insist(s.version === body.version,409,'Tool settings changed.');
             delete s.version; s.tools[body.toolId]=body.mode;
             store.db.prepare('UPDATE studio_settings SET value=?,version=version+1 WHERE id=1').run(JSON.stringify(s)); audit(store,a.user.id,'tool.mode',body.toolId,body.mode);
@@ -223,6 +244,7 @@ export function createStudio({ store, config, catalog, required, mutation, readJ
           integer(body.dailyLimit,0,100,'daily build limit'); integer(body.dailyBudgetMicros,0,100000000,'daily budget'); integer(body.version,0,1000000000,'account revision');
           insist(typeof body.revokeSessions === 'boolean',400,'Invalid session action.'); const reason=string(body.reason,300,'audit reason');
           store.transaction(() => {
+            a.check();
             insist(control(store,target.id).version === body.version,409,'Account controls changed. Reload before saving.');
             store.db.prepare('INSERT INTO studio_controls VALUES(?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET status=excluded.status,daily_limit=excluded.daily_limit,daily_budget=excluded.daily_budget,version=excluded.version').run(target.id,body.status,body.dailyLimit,body.dailyBudgetMicros,body.version+1);
             if (body.revokeSessions || body.status === 'suspended') store.db.prepare('DELETE FROM sessions WHERE user_id=?').run(target.id);
@@ -239,6 +261,7 @@ export function createStudio({ store, config, catalog, required, mutation, readJ
           const body=await readJson(req); fields(body,['archived','reason','version']); insist(typeof body.archived === 'boolean',400,'Invalid archive state.');
           const reason=string(body.reason,300,'audit reason'); integer(body.version,1,1000000000,'project revision');
           store.transaction(() => {
+            a.check();
             const row=store.db.prepare('SELECT * FROM studio_projects WHERE id=?').get(adminProject[1]);
             insist(row,404,'Project not found.');
             insist(a.owner || !isOwner(store.user(row.user_id)),403,'Only the owner can moderate owner projects.');
@@ -264,7 +287,7 @@ export function createStudio({ store, config, catalog, required, mutation, readJ
         if (body.briefId) {
           const brief=store.list(a.user.id).find(brief => brief.id === body.briefId); insist(brief,404,'Brief not found.'); data=brief;
         }
-        const created=store.transaction(() => newProject(store,a.user.id,data,catalog));
+        const created=store.transaction(() => { a.check(); return newProject(store,a.user.id,data,catalog); });
         json(res,201,{ project:created }); return true;
       }
       const pm=/^\/api\/projects\/([a-f0-9-]{36})(?:\/(files|revisions|restore|export|jobs))?$/.exec(path);
@@ -289,6 +312,7 @@ export function createStudio({ store, config, catalog, required, mutation, readJ
           const name=string(body.name,80,'name'), requirements=string(body.requirements,12000,'requirements');
           insist(typeof body.favorite === 'boolean' && typeof body.archived === 'boolean',400,'Invalid project state.');
           const saved=store.transaction(() => {
+            a.check();
             saveRevision(store,row,snapshot(store,row).files,'Project details updated',a.user.id,body.version);
             store.db.prepare('UPDATE studio_projects SET name=?,requirements=?,favorite=?,archived=? WHERE id=?').run(name,requirements,Number(body.favorite),Number(body.archived),row.id);
             return snapshot(store,project(store,a.user.id,row.id));
@@ -302,12 +326,12 @@ export function createStudio({ store, config, catalog, required, mutation, readJ
           if (body.remove) { insist(index >= 0,404,'File not found.'); files.splice(index,1); }
           else if (body.renameTo) { filePath(body.renameTo); insist(index >= 0,404,'File not found.'); files[index].path=body.renameTo; }
           else { const file={path:body.path,content:body.content}; if (index >= 0) files[index]=file; else files.push(file); }
-          const saved=store.transaction(() => saveRevision(store,row,files,body.remove ? `Delete ${body.path}` : body.renameTo ? `Rename ${body.path}` : `Save ${body.path}`,a.user.id,body.version));
+          const saved=store.transaction(() => { a.check(); return saveRevision(store,row,files,body.remove ? `Delete ${body.path}` : body.renameTo ? `Rename ${body.path}` : `Save ${body.path}`,a.user.id,body.version); });
           json(res,200,{ project:saved }); return true;
         }
         if (method === 'POST' && action === 'restore') {
           fields(body,['version','revision']); integer(body.version,1,1000000000,'project revision'); const old=snapshot(store,row,integer(body.revision,1,1000000000,'revision'));
-          const saved=store.transaction(() => saveRevision(store,row,old.files,`Restore revision ${body.revision}`,a.user.id,body.version));
+          const saved=store.transaction(() => { a.check(); return saveRevision(store,row,old.files,`Restore revision ${body.revision}`,a.user.id,body.version); });
           json(res,200,{ project:saved }); return true;
         }
         if (method === 'POST' && action === 'jobs') {
@@ -321,6 +345,10 @@ export function createStudio({ store, config, catalog, required, mutation, readJ
           insist(workerReady(),503,'No healthy isolated worker is connected.');
           const id=randomBytes(16).toString('hex'), now=new Date().toISOString();
           store.transaction(() => {
+            a.check();
+            const current=project(store,a.user.id,row.id);
+            insist(!current.archived && current.version === body.version,409,'Project changed. Reload before generating.');
+            insist(allowed(current.tool_id,a.user),403,'This generator is not enabled for your account.');
             const s=models.select(body);
             insist(workerReady(s.provider || 'openai'),503,'The connected worker has no configured credential for the selected provider. Choose a supported model or configure that provider privately on the worker.');
             const limits=control(store,a.user.id), day=now.slice(0,10);
@@ -345,13 +373,16 @@ export function createStudio({ store, config, catalog, required, mutation, readJ
         const body=await readJson(req); fields(body,jm[2] === 'apply' ? ['version'] : []);
         if (method === 'POST' && jm[2] === 'cancel') {
           store.transaction(() => {
+            a.check();
+            const current=store.db.prepare('SELECT status FROM studio_jobs WHERE id=? AND user_id=?').get(job.id,a.user.id);
             insist(store.db.prepare("UPDATE studio_jobs SET status='cancelled',cost=CASE WHEN status='running' THEN reserve ELSE 0 END,lease=NULL,updated_at=? WHERE id=? AND status IN ('queued','running')").run(new Date().toISOString(),job.id).changes,409,'This build is no longer running.');
-            models.settle(job.id,job.status === 'queued' ? 'released' : 'pending');
+            models.settle(job.id,current.status === 'queued' ? 'released' : 'pending');
             event(store,job.id,'cancelled','Cancellation requested. Any provider work already accepted may still be billed.',true);
           }); json(res,200,{ ok:true }); return true;
         }
         if (method === 'POST' && jm[2] === 'apply') {
           const saved=store.transaction(() => {
+            a.check();
             const current=store.db.prepare('SELECT * FROM studio_jobs WHERE id=? AND user_id=?').get(job.id,a.user.id);
             if (current.status === 'applied' && current.applied_version) {
               const row=project(store,a.user.id,current.project_id);
