@@ -11,7 +11,8 @@
   <aside class="rail">
     <a class="brand" href="/"><b>N<span>D</span></b><span>AI STUDIO<small>NIGHTZ DEVELOPMENT</small></span></a>
     <p class="eyebrow rail-caption">CREATOR WORKSPACE</p>
-    <nav aria-label="Workspace navigation">
+    <button type="button" class="nav-toggle" data-navigation-toggle aria-controls="workspace-navigation" aria-expanded="false" hidden>Menu</button>
+    <nav id="workspace-navigation" aria-label="Workspace navigation">
       <a href="#projects" id="projects-nav"><span aria-hidden="true">[]</span>My projects</a>
       <a href="/#projects"><span aria-hidden="true">/</span>Saved briefs</a>
       <a href="/#tools"><span aria-hidden="true">+</span>Tool library</a>
@@ -26,9 +27,10 @@
       <div id="error" class="notice error" role="alert" hidden></div>
       <div id="draft-storage-warning" class="notice error" role="alert" hidden>Browser draft recovery is unavailable. Unsaved source remains in this tab only. Keep it open and copy important changes before reloading or leaving.</div>
       <section id="loading" class="empty"><span class="eyebrow">CONNECTING TO YOUR WORKSPACE</span><h1>Loading your projects.</h1></section>
+      <section id="route-error" class="empty" aria-labelledby="route-error-title" hidden><span class="eyebrow">WORKSPACE CONNECTION</span><h1 id="route-error-title">Workspace unavailable.</h1><p id="route-error-message"></p><div class="actions"><button id="retry-workspace" class="primary">Retry loading</button><a id="back-to-projects" class="secondary" href="#projects">Back to projects</a></div></section>
       <section id="login" class="empty" hidden><span class="eyebrow">YOUR CREATIVE SPACE</span><h1>Make it yours.</h1><p>Sign in with Discord to create private projects, edit source files and keep every version in one place.</p><a class="primary" href="/auth/discord">Continue with Discord</a></section>
       <section id="dashboard" hidden>
-        <div class="intro"><div><p class="eyebrow">FROM THE FIRST LINE TO THE NEXT RELEASE</p><h1>Your build desk.</h1><p>Pick up a project, turn a brief into source, or start something new.</p></div><span id="worker-status" class="status">Checking worker</span></div>
+        <div class="intro"><div><p class="eyebrow">FROM THE FIRST LINE TO THE NEXT RELEASE</p><h1>Your projects.</h1><p>Open a project, start from a brief, or create a new source workspace.</p></div><span id="worker-status" class="status">Checking worker</span></div>
         <div class="toolbar"><label class="search"><span class="sr-only">Search projects</span><input id="project-search" type="search" placeholder="Search your projects" autocomplete="off"></label><label class="filter-label">View<select id="project-filter"><option value="active">Active projects</option><option value="favorites">Favorites</option><option value="archived">Archived</option><option value="all">All projects</option></select></label><label class="filter-label">Sort<select id="project-sort"><option value="recent">Recently updated</option><option value="name">Project name</option></select></label></div>
         <p id="project-count" class="muted fine" aria-live="polite"></p><div id="project-grid" class="project-grid"></div>
       </section>

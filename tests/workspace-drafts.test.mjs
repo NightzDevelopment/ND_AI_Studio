@@ -81,3 +81,38 @@ test('unsupported recovery size is rejected before storage without deleting any 
   assert.throws(()=>one.serialize('account-a','project',[],'client/main.lua'),/Invalid draft recovery source/);
   assert.equal(one.get('client/main.lua').length,131073);
 });
+
+
+test('delayed save acknowledgements never settle a recreated draft with identical text', () => {
+  const drafts=new SourceDrafts();
+  drafts.edit(project(1),'client/main.lua','return 2');
+  const sentIdentity=drafts.identity('client/main.lua');
+  drafts.edit(project(3,[{path:'client/main.lua',content:'return 9'}]),'client/main.lua','return 9');
+  drafts.edit(project(3,[{path:'client/main.lua',content:'return 9'}]),'client/main.lua','return 2');
+  assert.notEqual(drafts.identity('client/main.lua'),sentIdentity);
+  assert.equal(drafts.saved(project(2,[{path:'client/main.lua',content:'return 2'}]),'client/main.lua','return 2',sentIdentity),false);
+  assert.equal(drafts.get('client/main.lua'),'return 2');
+  assert.equal(drafts.record('client/main.lua').baseVersion,3);
+});
+
+test('persisted recovery retains draft identity and refuses older save acknowledgements', () => {
+  const drafts=new SourceDrafts();
+  drafts.edit(project(1),'client/main.lua','return 2');
+  const identity=drafts.identity('client/main.lua');
+  const raw=drafts.serialize('account-a','project',[],'client/main.lua',3);
+  const recovery=new SourceDrafts();recovery.restore(raw,'account-a','project');
+  assert.equal(recovery.identity('client/main.lua'),identity);
+  assert.equal(recovery.saved(project(2),'client/main.lua','return 2',identity),false);
+  assert.equal(recovery.get('client/main.lua'),'return 2');
+  assert.equal(recovery.projectVersion,3);
+});
+
+test('legacy recovery records gain identities without changing their source or original bases', () => {
+  const raw=JSON.stringify({format:1,userId:'account-a',projectId:'project',entries:[['client/main.lua',{content:'return 2',baseContent:'return 1',baseVersion:1}]],tabs:[],selected:'client/main.lua'});
+  const drafts=new SourceDrafts();drafts.restore(raw,'account-a','project');
+  assert.match(drafts.identity('client/main.lua'),/^[a-f0-9-]{36}$/);
+  assert.equal(drafts.get('client/main.lua'),'return 2');
+  const identity=drafts.identity('client/main.lua');
+  drafts.edit(project(1),'client/main.lua','return 3');
+  assert.equal(drafts.identity('client/main.lua'),identity);
+});

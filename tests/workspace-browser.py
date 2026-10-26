@@ -29,6 +29,7 @@ except ModuleNotFoundError as failure:
 
 ROOT = Path(__file__).resolve().parents[1]
 PROJECT = '11111111-1111-4111-8111-111111111111'
+OTHER_PROJECT = '44444444-4444-4444-8444-444444444444'
 USER = '22222222-2222-4222-8222-222222222222'
 JOB = '33333333-3333-4333-8333-333333333333'
 SOURCE = [{'path': 'client/main.lua', 'content': 'return 1'}, {'path': 'README.md', 'content': 'Original'}]
@@ -39,17 +40,33 @@ class Fixture:
         self.lock = threading.Lock()
         self.files = copy.deepcopy(SOURCE if files is None else files)
         self.version = 1
+        self.archived = False
         self.revisions = {1: copy.deepcopy(self.files)}
         self.applies = 0
         self.saves = 0
         self.user_id = USER
+        self.csrf = 'fixture-csrf'
         self.admin = False
         self.admin_models = False
+        self.admin_tools = False
+        self.admin_users = False
+        self.delayed_reads = {}
+        self.settings = {'guildId':'','roleMappings':{},'model':'fixture-model','version':1,'maxOutputTokens':1024,'maxCalls':2,'maxBudgetMicros':100000,'inputUsdPerMillion':1,'outputUsdPerMillion':2}
+        self.settings_requests = []
+        self.project_creations = []
+        self.delay_create = False
+        self.create_requested = threading.Event()
+        self.release_create = threading.Event()
         self.models = [{'id': 'fixture-model', 'label': 'Fixture model', 'tier': 'standard', 'creditsPerBuild': 0, 'maxBudgetMicros': 500000}]
         self.admin_config = None
         self.saved_catalog = None
+        self.mutation_requests = []
+        self.other_project = dict(id=OTHER_PROJECT, name='Other project', tool_id='ai-script-generator', target='Standalone', requirements='Other source', version=1, archived=False, files=[{'path':'client/main.lua','content':'return 900'}], updated_at='2026-01-01T00:00:00.000Z')
+        self.expired = False
+        self.fail_reads = {}
         self.delay_project = False
         self.delay_save = False
+        self.delay_save_reply = False
         self.save_requested = threading.Event()
         self.release_save = threading.Event()
         self.save_completed = threading.Event()
@@ -80,6 +97,12 @@ class Fixture:
             def do_GET(self):
                 parsed = urlparse(self.path)
                 path = parsed.path
+                pending_read=fixture.delayed_reads.pop(path,None)
+                if pending_read:
+                    pending_read[0].set()
+                    pending_read[1].wait(timeout=10)
+                if path in fixture.fail_reads:
+                    return self.send_json({'error':'Project not found.' if fixture.fail_reads[path] == 404 else 'Temporary fixture read failure.'},fixture.fail_reads[path])
                 if not path.startswith('/api/'):
                     return super().do_GET()
                 if path == f'/api/projects/{PROJECT}' and fixture.delay_project:
@@ -87,10 +110,18 @@ class Fixture:
                     fixture.release_project.wait(timeout=10)
                     fixture.delay_project = False
                 with fixture.lock:
+                    if fixture.expired:
+                        return self.send_json({'error':'Your session ended. Sign in again.'}, 401)
+                    if path == f'/api/projects/{OTHER_PROJECT}':
+                        return self.send_json({'project':fixture.other_project})
+                    if path == f'/api/projects/{OTHER_PROJECT}/jobs':
+                        return self.send_json({'jobs':[]})
+                    if path == '/api/briefs':
+                        return self.send_json({'briefs':[]})
                     if path == '/api/session':
-                        return self.send_json({'user': {'id': fixture.user_id, 'displayName': 'Browser tester', 'density': 'comfortable'}, 'csrf': 'fixture-csrf'})
+                        return self.send_json({'user': {'id': fixture.user_id, 'displayName': 'Browser tester', 'density': 'comfortable'}, 'csrf': fixture.csrf})
                     if path == '/api/studio/session':
-                        return self.send_json({'owner': fixture.admin, 'permissions': (['settings:manage', 'audit:read'] if fixture.admin_models else ['audit:read']) if fixture.admin else [], 'workerReady': True, 'tools': [{'id': 'ai-script-generator', 'enabled': True}]})
+                        return self.send_json({'owner': fixture.admin, 'permissions': ((['settings:manage', 'audit:read'] if fixture.admin_models else ['audit:read'])+(['tools:manage'] if fixture.admin_tools else [])+(['users:read','users:manage'] if fixture.admin_users else [])) if fixture.admin else [], 'workerReady': True, 'tools': [{'id': 'ai-script-generator', 'enabled': True}]})
                     if path == '/api/studio/models':
                         return self.send_json({'models': fixture.models, 'defaultModelId': fixture.models[0]['id'], 'pricingVersion': 1, 'creditsEnabled': False, 'wallet': {'available': 0, 'reserved': 0, 'pending': 0}})
                     if path == f'/api/projects/{PROJECT}':
@@ -105,12 +136,18 @@ class Fixture:
                             version = int(query['version'][0])
                             return self.send_json({'project': fixture.project(version)})
                         return self.send_json({'revisions': [{'version': version, 'summary': 'Fixture revision', 'createdAt': '2026-01-01T00:00:00.000Z'} for version in sorted(fixture.revisions, reverse=True)]})
+                    if path == '/api/admin/tools':
+                        return self.send_json({'tools':{'ai-script-generator':'owner','discord-bot-generator':'disabled'},'version':1,'workerReady':True})
+                    if path == '/api/admin/users':
+                        users=[{'id':'user-alice','display_name':'Alice','username':'alice','discord_id':'100000000000000001','status':'active','daily_limit':5,'daily_budget':1000000,'version':1},{'id':'user-bob','display_name':'Bob','username':'bob','discord_id':'100000000000000002','status':'active','daily_limit':5,'daily_budget':1000000,'version':1}]
+                        query=parse_qs(parsed.query).get('q',[''])[0].lower()
+                        return self.send_json({'users':[user for user in users if query in user['display_name'].lower()],'next':None})
                     if path == '/api/admin/models':
                         return self.send_json(fixture.admin_config)
                     if path == '/api/admin/credits/pending':
                         return self.send_json({'items': []})
                     if path == '/api/admin/settings':
-                        return self.send_json({'settings': {'guildId': '', 'roleMappings': {}, 'model': '', 'version': 1, 'maxBudgetMicros': 500000}, 'permissions': [], 'workerReady': True})
+                        return self.send_json({'settings':fixture.settings,'permissions':[],'workerReady':True})
                     if path == '/api/admin/audit':
                         return self.send_json({'items': [], 'next': None})
                     if path == '/api/projects':
@@ -118,32 +155,67 @@ class Fixture:
                     return self.send_json({'error': 'Unexpected fixture request: ' + path}, 404)
 
             def do_POST(self):
+                if urlparse(self.path).path == '/api/projects':
+                    body=json.loads(self.rfile.read(int(self.headers.get('Content-Length',0))))
+                    fixture.project_creations.append(copy.deepcopy(body))
+                    if fixture.delay_create:
+                        fixture.create_requested.set();fixture.release_create.wait(timeout=10)
+                    with fixture.lock:
+                        fixture.other_project=dict(fixture.other_project,name=body['name'],requirements=body['requirements'],files=[],version=1)
+                        return self.send_json({'project':fixture.other_project},201)
                 with fixture.lock:
                     fixture.applies += 1
                 return self.send_json({'error': 'No browser apply call is expected.'}, 500)
 
             def do_PATCH(self):
                 body = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))))
+                if urlparse(self.path).path == '/api/admin/settings':
+                    fixture.settings_requests.append(copy.deepcopy(body))
+                    pending=fixture.delayed_reads.pop('PATCH /api/admin/settings',None)
+                    if pending:
+                        pending[0].set();pending[1].wait(timeout=10)
+                    with fixture.lock:
+                        fixture.settings=dict(body,version=body['version']+1)
+                        return self.send_json({'settings':fixture.settings})
                 with fixture.lock:
                     fixture.saved_catalog = body
                     fixture.admin_config.update(body)
+                    fixture.admin_config['version']=body['version']+1
                 return self.send_json(fixture.admin_config)
 
             def do_PUT(self):
                 body = json.loads(self.rfile.read(int(self.headers.get('Content-Length', 0))))
+                with fixture.lock:
+                    fixture.mutation_requests.append({'path':self.path,'body':copy.deepcopy(body)})
                 if fixture.delay_save:
                     fixture.save_requested.set()
                     fixture.release_save.wait(timeout=10)
                 with fixture.lock:
-                    if body['version'] != fixture.version:
+                    other = self.path == f'/api/projects/{OTHER_PROJECT}/files'
+                    current = fixture.other_project if other else fixture.project()
+                    if body['version'] != current['version']:
                         return self.send_json({'error': 'Source changed.'}, 409)
-                    fixture.files = [file for file in fixture.files if file['path'] != body['path']]
-                    fixture.files.append({'path': body['path'], 'content': body['content']})
-                    fixture.version += 1
+                    files = [file for file in current['files'] if file['path'] != body['path']]
+                    if not body.get('remove'):
+                        content = next((file['content'] for file in current['files'] if file['path'] == body['path']), '') if 'renameTo' in body else body['content']
+                        files.append({'path':body.get('renameTo', body['path']), 'content':content})
                     fixture.saves += 1
-                    fixture.revisions[fixture.version] = copy.deepcopy(fixture.files)
-                    self.send_json({'project': fixture.project()})
-                    fixture.save_completed.set()
+                    if other:
+                        fixture.other_project = dict(current, files=files, version=current['version']+1)
+                        response = fixture.other_project
+                    else:
+                        fixture.files = files
+                        fixture.version += 1
+                        fixture.revisions[fixture.version] = copy.deepcopy(fixture.files)
+                        response = fixture.project()
+                    response=copy.deepcopy(response)
+                    hold_reply=fixture.delay_save_reply
+                    fixture.delay_save_reply=False
+                if hold_reply:
+                    fixture.save_requested.set()
+                    fixture.release_save.wait(timeout=10)
+                self.send_json({'project': response})
+                fixture.save_completed.set()
 
         self.server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
@@ -153,7 +225,7 @@ class Fixture:
     def project(self, version=None):
         version = self.version if version is None else version
         return dict(id=PROJECT, name='Browser project', tool_id='ai-script-generator', target='Standalone',
-                    requirements='Fixture source', version=version, archived=False,
+                    requirements='Fixture source', version=version, archived=self.archived,
                     files=copy.deepcopy(self.revisions[version]), updated_at='2026-01-01T00:00:00.000Z')
 
     def complete(self, files):
@@ -168,6 +240,7 @@ class Fixture:
     def close(self):
         self.release_project.set()
         self.release_save.set()
+        self.release_create.set()
         self.server.shutdown()
         self.server.server_close()
         self.thread.join(timeout=3)
@@ -213,6 +286,337 @@ class WorkspaceBrowserTests(unittest.TestCase):
     def open(self):
         self.page.goto(self.fixture.url)
         expect(self.page.locator('#editor-view')).to_be_visible()
+
+    def test_late_unauthorized_response_does_not_expire_a_recovered_same_user_session(self):
+        requested,released=threading.Event(),threading.Event()
+        self.fixture.delayed_reads['/api/studio/models']=(requested,released)
+        self.fixture.fail_reads['/api/studio/models']=401
+        self.page.goto(self.fixture.url)
+        self.assertTrue(requested.wait(timeout=5))
+        self.fixture.csrf='fixture-renewed-csrf'
+        with self.page.expect_response(lambda response: '/api/session' in response.url):
+            self.page.evaluate("window.dispatchEvent(new Event('online'))")
+        self.page.wait_for_timeout(100)
+        released.set()
+        expect(self.page.locator('#route-error')).to_be_visible()
+        expect(self.page.locator('#login')).to_be_hidden()
+        self.fixture.fail_reads.clear()
+        self.page.locator('#retry-workspace').click()
+        expect(self.page.locator('#editor-view')).to_be_visible()
+        expect(self.page.locator('#profile-link')).to_have_text('Browser tester')
+
+    def test_successful_explicit_draft_recovery_clears_the_earlier_conflict_error(self):
+        self.open()
+        self.page.locator('#code-editor').fill('return 444 -- my recovered source')
+        with self.fixture.lock:
+            self.fixture.version=2
+            self.fixture.files=[{'path':'client/main.lua','content':'return 445 -- external source'}]
+            self.fixture.revisions[2]=copy.deepcopy(self.fixture.files)
+        self.page.locator('#save-file').click()
+        expect(self.page.locator('#error')).to_contain_text('Source changed')
+        expect(self.page.locator('#draft-notice')).to_be_visible()
+        self.page.locator('#compare-draft').click()
+        self.page.locator('#save-draft').click()
+        expect(self.page.locator('#save-status')).to_have_text('Saved revision 3')
+        expect(self.page.locator('#error')).to_be_hidden()
+
+    def test_pending_rename_freezes_its_inputs_but_keeps_close_available(self):
+        self.open()
+        self.page.locator('#rename-file').click()
+        path=self.page.locator('#file-form input[name=path]')
+        path.fill('client/renamed.lua')
+        self.fixture.delay_save=True
+        self.page.locator('#file-form [type=submit]').click()
+        self.assertTrue(self.fixture.save_requested.wait(timeout=5))
+        expect(path).to_be_disabled()
+        expect(self.page.locator('#file-dialog [data-close]').first).to_be_enabled()
+        self.fixture.release_save.set()
+        expect(self.page.locator('#file-dialog')).to_be_hidden()
+        self.page.locator('#rename-file').click()
+        expect(path).to_be_enabled()
+        expect(path).to_have_value('client/renamed.lua')
+        self.assertEqual(len(self.fixture.mutation_requests),1)
+
+    def test_pending_new_project_locks_fields_and_ignores_repeated_submission(self):
+        self.open()
+        self.page.locator('#new-project').click()
+        form=self.page.locator('#project-form')
+        form.locator('[name=name]').fill('Exactly one pending project')
+        form.locator('[name=requirements]').fill('Preserve the submitted form while the server commits.')
+        self.fixture.delay_create=True
+        form.locator('[type=submit]').click()
+        self.assertTrue(self.fixture.create_requested.wait(timeout=5))
+        expect(form.locator('[name=name]')).to_be_disabled()
+        expect(form.get_by_role('combobox',name='Tool',exact=True)).to_be_disabled()
+        expect(form.get_by_role('combobox',name='Framework',exact=True)).to_be_disabled()
+        expect(form.locator('[data-close]').first).to_be_enabled()
+        form.evaluate("node=>node.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}))")
+        self.fixture.release_create.set()
+        expect(self.page.locator('#project-name')).to_have_text('Exactly one pending project')
+        self.assertEqual(len(self.fixture.project_creations),1)
+
+    def prepare_recreated_draft_before_an_old_acknowledgement(self):
+        self.open()
+        self.page.locator('#code-editor').fill('return 222 -- old submitted text')
+        self.fixture.delay_save_reply = True
+        self.page.locator('#save-file').click()
+        self.assertTrue(self.fixture.save_requested.wait(timeout=5))
+        changed=self.context.request.put(self.fixture.url.split('/workspace.html')[0]+f'/api/projects/{PROJECT}/files',data={'version':2,'path':'client/main.lua','content':'return 333 -- newer saved source'})
+        self.assertEqual(changed.status,200)
+        self.page.locator('#projects-nav').click()
+        expect(self.page.locator('#dashboard')).to_be_visible()
+        self.page.get_by_role('link',name='Open project',exact=True).click()
+        expect(self.page.locator('#project-meta')).to_contain_text('revision 3')
+        self.page.locator('#code-editor').fill('return 333 -- newer saved source')
+        self.page.locator('#code-editor').fill('return 222 -- old submitted text')
+
+    def test_typing_during_deletion_retains_the_new_draft_even_if_text_returns_to_its_old_value(self):
+        self.open()
+        text='return 888 -- retain new typing during deletion'
+        self.page.locator('#code-editor').fill(text)
+        self.fixture.delay_save_reply=True
+        self.page.locator('#delete-file').click()
+        self.page.locator('dialog[open]').get_by_role('button',name='Delete file',exact=True).click()
+        self.assertTrue(self.fixture.save_requested.wait(timeout=5))
+        self.page.locator('#code-editor').fill('return 889 -- a newer edit')
+        self.page.locator('#code-editor').fill(text)
+        self.fixture.release_save.set()
+        expect(self.page.locator('#draft-notice')).to_be_visible()
+        expect(self.page.locator('#code-editor')).to_have_value(text)
+        expect(self.page.locator('#file-list')).to_contain_text('client/main.lua (local draft)')
+
+    def test_old_save_acknowledgement_cannot_clear_a_newly_recreated_same_text_draft(self):
+        self.prepare_recreated_draft_before_an_old_acknowledgement()
+        self.fixture.release_save.set()
+        self.assertTrue(self.fixture.save_completed.wait(timeout=5))
+        expect(self.page.locator('#save-status')).to_have_text('Unsaved changes')
+        expect(self.page.locator('#code-editor')).to_have_value('return 222 -- old submitted text')
+        raw=self.page.evaluate("sessionStorage.getItem('ndai:source-drafts:" + USER + ':' + PROJECT + "')")
+        recovered=dict(json.loads(raw)['entries'])['client/main.lua']
+        self.assertEqual(recovered['baseVersion'],3)
+        self.assertEqual(recovered['baseContent'],'return 333 -- newer saved source')
+
+    def test_old_off_project_acknowledgement_keeps_newer_recovery_on_disk(self):
+        self.prepare_recreated_draft_before_an_old_acknowledgement()
+        self.page.locator('#projects-nav').click()
+        expect(self.page.locator('#dashboard')).to_be_visible()
+        self.fixture.release_save.set()
+        self.assertTrue(self.fixture.save_completed.wait(timeout=5))
+        self.page.wait_for_timeout(100)
+        self.page.get_by_role('link',name='Open project',exact=True).click()
+        expect(self.page.locator('#code-editor')).to_have_value('return 222 -- old submitted text')
+        expect(self.page.locator('#save-status')).to_have_text('Unsaved changes')
+
+    def test_delayed_admin_tab_cannot_overwrite_the_later_selected_pane(self):
+        self.fixture.admin = self.fixture.admin_models = self.fixture.admin_tools = True
+        requested,released=threading.Event(),threading.Event()
+        self.fixture.delayed_reads['/api/admin/tools']=(requested,released)
+        self.open()
+        self.page.locator('#admin-nav').click()
+        self.assertTrue(requested.wait(timeout=5))
+        self.page.get_by_role('tab',name='Settings',exact=True).click()
+        expect(self.page.locator('#admin-content')).to_contain_text('Discord connection')
+        released.set()
+        self.page.wait_for_timeout(100)
+        expect(self.page.get_by_role('tab',name='Settings',exact=True)).to_have_attribute('aria-selected','true')
+        expect(self.page.locator('#admin-content')).to_contain_text('Discord connection')
+        expect(self.page.locator('#admin-content')).not_to_contain_text('Generator access')
+
+    def test_failed_old_admin_read_does_not_replace_the_current_panes_error_state(self):
+        self.fixture.admin = self.fixture.admin_models = self.fixture.admin_tools = True
+        requested,released=threading.Event(),threading.Event()
+        self.fixture.delayed_reads['/api/admin/tools']=(requested,released)
+        self.fixture.fail_reads['/api/admin/tools']=503
+        self.open()
+        self.page.locator('#admin-nav').click()
+        self.assertTrue(requested.wait(timeout=5))
+        self.page.get_by_role('tab',name='Settings',exact=True).click()
+        expect(self.page.locator('#admin-content')).to_contain_text('Discord connection')
+        released.set()
+        self.page.wait_for_timeout(100)
+        expect(self.page.locator('#error')).to_be_hidden()
+        expect(self.page.locator('#admin-content')).to_contain_text('Discord connection')
+
+    def test_late_initial_user_search_does_not_replace_a_newer_search(self):
+        self.fixture.admin = self.fixture.admin_users = True
+        requested,released=threading.Event(),threading.Event()
+        self.fixture.delayed_reads['/api/admin/users']=(requested,released)
+        self.open()
+        self.page.locator('#admin-nav').click()
+        self.assertTrue(requested.wait(timeout=5))
+        self.page.get_by_label('Find an account',exact=True).fill('Alice')
+        self.page.get_by_role('button',name='Search',exact=True).click()
+        expect(self.page.locator('#admin-content table')).to_contain_text('Alice')
+        released.set()
+        self.page.wait_for_timeout(100)
+        expect(self.page.locator('#admin-content table')).to_contain_text('Alice')
+        expect(self.page.locator('#admin-content table')).not_to_contain_text('Bob')
+
+    def test_settings_edits_typed_during_save_survive_the_acknowledgement(self):
+        self.fixture.admin = self.fixture.admin_models = True
+        self.open()
+        self.page.locator('#admin-nav').click()
+        expect(self.page.locator('#admin-content')).to_contain_text('Discord connection')
+        guild=self.page.get_by_label('Discord guild ID',exact=True)
+        guild.fill('100000000000000001')
+        requested,released=threading.Event(),threading.Event()
+        self.fixture.delayed_reads['PATCH /api/admin/settings']=(requested,released)
+        self.page.get_by_role('button',name='Save configuration',exact=True).click()
+        self.assertTrue(requested.wait(timeout=5))
+        guild.fill('100000000000000002')
+        released.set()
+        expect(self.page.locator('#toast')).to_contain_text('Configuration saved')
+        expect(guild).to_have_value('100000000000000002')
+        with self.page.expect_response(lambda response: '/api/admin/settings' in response.url and response.request.method == 'PATCH'):
+            self.page.get_by_role('button',name='Save configuration',exact=True).click()
+        self.assertEqual(self.fixture.settings_requests[-1]['version'],2)
+        self.assertEqual(self.fixture.settings_requests[-1]['guildId'],'100000000000000002')
+
+    def test_archived_source_tab_moves_focus_without_inserting_a_draft(self):
+        self.fixture.archived = True
+        self.open()
+        editor = self.page.locator('#code-editor')
+        expect(editor).to_have_attribute('readonly', '')
+        editor.focus()
+        self.page.keyboard.press('Tab')
+        expect(editor).not_to_be_focused()
+        expect(editor).to_have_value('return 1')
+        expect(self.page.locator('#save-status')).to_have_text('Saved revision 1')
+        self.assertIsNone(self.page.evaluate("sessionStorage.getItem('ndai:source-drafts:" + USER + ':' + PROJECT + "')"))
+        self.assertEqual(self.fixture.mutation_requests,[])
+
+    def test_editable_source_tab_indents_and_shift_tab_escapes_the_editor(self):
+        self.open()
+        editor = self.page.locator('#code-editor')
+        editor.focus()
+        editor.evaluate('(node)=>node.setSelectionRange(0,0)')
+        self.page.keyboard.press('Tab')
+        expect(editor).to_be_focused()
+        expect(editor).to_have_value('    return 1')
+        expect(self.page.locator('#save-file')).to_be_enabled()
+        self.page.keyboard.press('Shift+Tab')
+        expect(editor).not_to_be_focused()
+        self.assertEqual(self.fixture.mutation_requests,[])
+
+    def test_project_read_failure_offers_retry_without_a_false_sign_in(self):
+        path = f'/api/projects/{PROJECT}'
+        self.fixture.fail_reads[path] = 503
+        self.page.goto(self.fixture.url)
+        expect(self.page.locator('#route-error')).to_be_visible()
+        expect(self.page.locator('#route-error-message')).to_contain_text('Temporary fixture read failure')
+        expect(self.page.locator('#login')).to_be_hidden()
+        self.fixture.fail_reads.clear()
+        self.page.locator('#retry-workspace').click()
+        expect(self.page.locator('#editor-view')).to_be_visible()
+        expect(self.page.locator('#code-editor')).to_have_value('return 1')
+        self.assertEqual(self.fixture.mutation_requests,[])
+
+    def test_catalog_bootstrap_failure_retains_known_authentication_and_retries(self):
+        self.fixture.fail_reads['/catalog.json'] = 503
+        self.page.goto(self.fixture.url)
+        expect(self.page.locator('#route-error')).to_be_visible()
+        expect(self.page.locator('#login')).to_be_hidden()
+        self.fixture.fail_reads.clear()
+        self.page.locator('#retry-workspace').click()
+        expect(self.page.locator('#editor-view')).to_be_visible()
+        expect(self.page.locator('#profile-link')).to_have_text('Browser tester')
+        self.assertEqual(self.fixture.mutation_requests,[])
+
+    def test_private_project_error_returns_to_projects_without_exposing_source(self):
+        self.fixture.fail_reads[f'/api/projects/{PROJECT}'] = 404
+        self.page.goto(self.fixture.url)
+        expect(self.page.locator('#route-error-title')).to_have_text('Project unavailable.')
+        expect(self.page.locator('#route-error-message')).to_have_text('Project not found.')
+        expect(self.page.locator('#login')).to_be_hidden()
+        self.page.locator('#back-to-projects').click()
+        expect(self.page.locator('#dashboard')).to_be_visible()
+        self.assertEqual(self.fixture.mutation_requests,[])
+
+    def test_corrupt_recovery_is_never_removed_by_selection_or_overwritten_by_typing(self):
+        raw = 'unreadable recovery text: return 987'
+        key = f'ndai:source-drafts:{USER}:{PROJECT}'
+        self.page.add_init_script('sessionStorage.setItem(' + json.dumps(key) + ',' + json.dumps(raw) + ')')
+        self.open()
+        expect(self.page.locator('#draft-storage-warning')).to_be_visible()
+        self.page.locator('#file-list').get_by_role('button',name='README.md',exact=True).click()
+        self.page.locator('#code-editor').fill('New in-memory source retained separately')
+        self.assertEqual(self.page.evaluate('(key)=>sessionStorage.getItem(key)',key),raw)
+        expect(self.page.locator('#draft-storage-warning')).to_be_visible()
+        expect(self.page.locator('#code-editor')).to_have_value('New in-memory source retained separately')
+
+    def test_expired_session_can_download_source_when_browser_storage_is_unavailable(self):
+        self.page.add_init_script("Storage.prototype.setItem=()=>{throw new DOMException('Full','QuotaExceededError');};")
+        self.open()
+        self.page.locator('#code-editor').fill('return 654 -- rescue without browser storage')
+        self.fixture.expired = True
+        self.page.evaluate("document.dispatchEvent(new Event('visibilitychange'))")
+        expect(self.page.locator('#login')).to_be_visible()
+        with self.page.expect_download() as pending:
+            self.page.locator('#recover-expired-drafts').click()
+        exported = json.loads(Path(pending.value.path()).read_text())
+        self.assertEqual(exported['files'][0]['content'],'return 654 -- rescue without browser storage')
+        self.assertEqual(exported['files'][0]['path'],'client/main.lua')
+        self.assertNotIn('csrf',exported)
+        self.assertNotIn('session',exported)
+        self.assertEqual(self.fixture.mutation_requests,[])
+
+    def test_delete_confirmation_cannot_target_a_project_opened_after_the_prompt(self):
+        self.open()
+        self.page.locator('#delete-file').click()
+        expect(self.page.locator('dialog[open]')).to_contain_text('Delete source file?')
+        self.page.evaluate("location.hash='project/" + OTHER_PROJECT + "'")
+        expect(self.page.locator('#project-name')).to_have_text('Other project')
+        dialog = self.page.locator('dialog[open]')
+        if dialog.count():
+            dialog.get_by_role('button',name='Delete file',exact=True).click()
+        self.page.wait_for_timeout(150)
+        self.assertEqual(self.fixture.mutation_requests, [])
+        self.assertEqual(self.fixture.other_project['files'][0]['content'],'return 900')
+
+    def test_delayed_rename_response_keeps_the_current_projects_unsaved_source(self):
+        self.open()
+        self.page.locator('#rename-file').click()
+        self.page.locator('#file-form input[name=path]').fill('client/renamed.lua')
+        self.fixture.delay_save = True
+        self.page.locator('#file-form button[type=submit]').click()
+        self.assertTrue(self.fixture.save_requested.wait(timeout=5))
+        self.page.locator('#file-dialog button[data-close]').first.click()
+        self.page.evaluate("location.hash='project/" + OTHER_PROJECT + "'")
+        expect(self.page.locator('#project-name')).to_have_text('Other project')
+        self.page.locator('#code-editor').fill('return 901 -- preserve other project draft')
+        self.fixture.release_save.set()
+        self.assertTrue(self.fixture.save_completed.wait(timeout=5))
+        self.page.wait_for_timeout(150)
+        expect(self.page.locator('#project-name')).to_have_text('Other project')
+        expect(self.page.locator('#code-editor')).to_have_value('return 901 -- preserve other project draft')
+        self.assertEqual(self.fixture.mutation_requests[0]['path'],f'/api/projects/{PROJECT}/files')
+
+    def test_save_stays_locked_when_source_input_changes_during_the_request(self):
+        self.open()
+        self.page.locator('#code-editor').fill('return 321 -- first save')
+        self.fixture.delay_save = True
+        self.page.locator('#save-file').click()
+        self.assertTrue(self.fixture.save_requested.wait(timeout=5))
+        self.page.locator('#code-editor').fill('return 322 -- typed while saving')
+        expect(self.page.locator('#save-file')).to_be_disabled()
+        self.page.keyboard.press('Control+s')
+        self.fixture.release_save.set()
+        self.assertTrue(self.fixture.save_completed.wait(timeout=5))
+        expect(self.page.locator('#code-editor')).to_have_value('return 322 -- typed while saving')
+        expect(self.page.locator('#save-file')).to_be_enabled()
+        self.assertEqual(len(self.fixture.mutation_requests),1)
+
+    def test_expired_session_preserves_drafts_and_closes_source_dialogs(self):
+        self.open()
+        self.page.locator('#code-editor').fill('return 323 -- recover after sign in')
+        self.page.locator('#rename-file').click()
+        self.fixture.expired = True
+        self.page.evaluate("document.dispatchEvent(new Event('visibilitychange'))")
+        expect(self.page.locator('#login')).to_be_visible()
+        expect(self.page.locator('dialog[open]')).to_have_count(0)
+        stored = self.page.evaluate("sessionStorage.getItem('ndai:source-drafts:" + USER + ':' + PROJECT + "')")
+        self.assertIn('return 323 -- recover after sign in',stored)
+        self.assertEqual(self.fixture.mutation_requests,[])
 
     def test_provider_disclosure_names_deepseek_without_a_paid_request(self):
         self.fixture.job['status'] = 'failed'
