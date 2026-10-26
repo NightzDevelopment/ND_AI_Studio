@@ -469,7 +469,7 @@ class LaunchJourneys(unittest.TestCase):
         expect(self.page.locator('#project-count')).to_have_text('2 saved to your account')
 
 
-    def test_14_running_cancellation_preserves_source_and_owner_can_release_hold(self):
+    def test_14_running_cancellation_preserves_source_and_restores_allowance(self):
         project = self.project('QA cancelled build')
         self.new_file()
         before = self.api('/api/studio/credits')['data']['wallet']
@@ -480,17 +480,13 @@ class LaunchJourneys(unittest.TestCase):
         expect(self.page.locator('#build-state')).to_have_text('cancelled')
         expect(self.page.locator('#generate-button')).to_be_enabled()
         wallet = self.api('/api/studio/credits')['data']['wallet']
-        self.assertEqual(wallet['pending'], 5)
+        self.assertEqual(wallet['pending'], 0)
+        self.assertEqual(wallet['available'], before['available'])
         self.assertEqual(wallet['balance'], before['balance'])
         self.assertEqual(self.api(f'/api/projects/{project}')['data']['project']['files'][0]['content'], 'print("original")')
         self.page.goto(self.origin + '/workspace.html#admin')
         self.page.get_by_role('tab', name='Models & credits', exact=True).click()
         hold = self.page.locator('.credit-hold').filter(has_text='QA cancelled build')
-        expect(hold).to_contain_text('5 credits held')
-        hold.get_by_role('button', name='Release hold', exact=True).click()
-        dialog = self.page.get_by_role('dialog').filter(has_text='Release hold')
-        dialog.locator('[name=reason]').fill('Synthetic QA cancellation reviewed; no external spending occurred.')
-        dialog.get_by_role('button', name='Confirm', exact=True).click()
         expect(hold).to_have_count(0)
         released = self.api('/api/studio/credits')['data']['wallet']
         self.assertEqual(released['pending'], 0)
