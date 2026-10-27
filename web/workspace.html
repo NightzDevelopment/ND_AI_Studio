@@ -3,10 +3,13 @@
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <meta name="theme-color" content="#0b0b0e"><meta name="robots" content="noindex,nofollow">
-  <title>ND AI Studio | Build workspace</title>
-  <link rel="stylesheet" href="/workspace.css"><script type="module" src="/workspace.js"></script>
+  <title>ND AI Studio | Project workbench</title>
+  <link rel="stylesheet" href="/workspace.css">
+  <link rel="stylesheet" href="/workbench-ui.css">
+  <script type="module" src="/workspace.js"></script>
+  <script type="module" src="/workbench-ui.js"></script>
 </head>
-<body>
+<body class="studio-surface" data-workspace="source">
   <a class="skip" href="#content">Skip to workspace</a>
   <aside class="rail">
     <a class="brand" href="/"><b>N<span>D</span></b><span>AI STUDIO<small>NIGHTZ DEVELOPMENT</small></span></a>
@@ -14,6 +17,7 @@
     <button type="button" class="nav-toggle" data-navigation-toggle aria-controls="workspace-navigation" aria-expanded="false" hidden>Menu</button>
     <nav id="workspace-navigation" aria-label="Workspace navigation">
       <a href="#projects" id="projects-nav"><span aria-hidden="true">[]</span>My projects</a>
+      <a href="/agent.html" id="agent-nav" data-agent-link><span aria-hidden="true">&lt;/&gt;</span>Live agent <small>Preview</small></a>
       <a href="/#projects"><span aria-hidden="true">/</span>Saved briefs</a>
       <a href="/#tools"><span aria-hidden="true">+</span>Tool library</a>
       <a href="/#account"><span aria-hidden="true">@</span>My account</a>
@@ -37,14 +41,33 @@
       </section>
       <section id="billing-view" hidden aria-label="Plans and usage"></section>
       <section id="editor-view" hidden>
-        <div class="project-heading"><div><a href="#projects" class="back">All projects /</a><h1 id="project-name"></h1><p id="project-meta" class="muted"></p></div><div class="actions"><button id="project-settings">Project details</button><button id="history-button">History</button><button id="sync-source">Check for updates</button><a id="export-project" class="secondary">Download ZIP</a></div></div>
+        <div class="workbench-switcher">
+          <nav class="workspace-modes" aria-label="Project workspaces">
+            <a data-agent-link href="/agent.html">Live agent <span class="mode-tag">Owner preview</span></a>
+            <span aria-current="page">Source &amp; builds</span>
+          </nav>
+          <span class="workbench-caption">One project. Your source stays in sync.</span>
+        </div>
+        <div class="project-heading"><div><a href="#projects" class="back">All projects /</a><h1 id="project-name"></h1><p id="project-meta" class="muted"></p></div><div class="actions"><a data-agent-link class="primary open-agent" href="/agent.html">Open live agent <span aria-hidden="true">↗</span></a><button id="project-settings">Project details</button><button id="history-button">History</button><button id="sync-source">Check for updates</button><a id="export-project" class="secondary">Download ZIP</a></div></div>
         <p id="source-sync-status" class="source-sync-status" role="status">Saved source loaded.</p>
         <div id="draft-notice" class="notice draft-notice" role="status" hidden><p id="draft-message"></p><button id="compare-draft">Compare local draft</button></div>
+        <div class="workbench-tools" aria-label="Editor display controls">
+          <div class="display-presets" role="group" aria-label="Workspace layout">
+            <button type="button" data-workbench-layout="balanced" aria-pressed="true">Workspace</button>
+            <button type="button" data-workbench-layout="focus" aria-pressed="false">Focus code</button>
+          </div>
+          <div class="editor-font-tools" role="group" aria-label="Code text size">
+            <button type="button" data-font-size="decrease" aria-label="Decrease code text size">A-</button>
+            <output id="workbench-font-size" aria-live="polite">14 px</output>
+            <button type="button" data-font-size="increase" aria-label="Increase code text size">A+</button>
+          </div>
+          <span id="workbench-file-count" class="workbench-caption" aria-live="polite"></span>
+        </div>
         <div class="mobile-panels" aria-label="Workspace panels"><button data-panel="files">Files</button><button data-panel="editor" aria-pressed="true">Editor</button><button data-panel="build">Build</button></div>
         <div class="workbench" id="workbench" data-panel="editor">
-          <aside class="file-panel"><div class="panel-heading"><span>EXPLORER</span><button id="new-file" class="icon" aria-label="Create source file">+</button></div><div id="file-list" class="file-list"></div><div class="file-actions"><button id="rename-file">Rename</button><button id="delete-file" class="danger">Delete</button></div><p class="panel-note">Text sources only.<br>64 files / 128 KiB per project.</p></aside>
+          <aside class="file-panel"><div class="panel-heading"><span>PROJECT FILES</span><button id="new-file" class="icon" aria-label="Create source file">+</button></div><label class="file-search"><span class="sr-only">Filter source files</span><input id="workbench-file-search" type="search" placeholder="Find a file..." autocomplete="off"></label><div id="file-list" class="file-list"></div><p id="workbench-file-empty" class="file-search-empty" hidden>No matching files.</p><div class="file-actions"><button id="rename-file">Rename</button><button id="delete-file" class="danger">Delete</button></div><p class="panel-note">Text sources only.<br>64 files / 128 KiB per project.</p></aside>
           <div class="editor-panel"><div class="file-tabs" id="file-tabs" role="tablist" aria-label="Open source files"></div><div class="editor-toolbar"><span id="file-label">Choose a file</span><button id="save-file" class="primary" disabled>Save revision</button></div><div id="code-empty" class="code-empty"><span aria-hidden="true">&lt;/&gt;</span><h2>A clean starting point.</h2><p>Create a source file or describe your build in the right panel.</p></div><div class="code-wrap" id="code-wrap" hidden><pre id="code-highlight" aria-hidden="true"></pre><textarea id="code-editor" aria-label="Source code editor" spellcheck="false" autocapitalize="off" autocomplete="off" wrap="off"></textarea></div><div class="editor-status"><span id="save-status">No file selected</span><span id="line-count">Ctrl+S to save</span></div></div>
-          <aside class="build-panel"><div class="panel-heading"><span>BUILD ASSISTANT</span><span id="build-state" class="status small">Idle</span></div><div id="build-notice" class="panel-note"></div><div id="build-history" class="build-history"></div><form id="build-form"><label for="build-prompt">What are we building?</label><textarea id="build-prompt" maxlength="12000" rows="5" placeholder="Describe the behavior, dependencies, UI and changes you need." required></textarea><p class="fine muted">This request and the current project's source are sent to the configured AI provider. Never include credentials.</p><button id="generate-button" class="primary" type="submit" disabled>Generate build</button><button id="view-live-preview" class="secondary live-preview-jump" type="button" aria-controls="live-preview" hidden>View live code</button></form></aside>
+          <aside class="build-panel"><div class="panel-heading"><span>QUICK BUILD</span><span id="build-state" class="status small">Idle</span></div><p class="quick-build-intro">One request, a validated revision. For a conversation with plans and file tools, use <a data-agent-link href="/agent.html">Live agent</a>.</p><div id="build-notice" class="panel-note"></div><details class="recent-builds"><summary>Recent builds</summary><div id="build-history" class="build-history"></div></details><form id="build-form"><label for="build-prompt">What are we building?</label><textarea id="build-prompt" maxlength="12000" rows="5" placeholder="Describe the behavior, dependencies, UI and changes you need." required></textarea><p class="fine muted">This request and the current project's source are sent to the configured AI provider. Never include credentials.</p><button id="generate-button" class="primary" type="submit" disabled>Generate build</button><button id="view-live-preview" class="secondary live-preview-jump" type="button" aria-controls="live-preview" hidden>View live code</button></form></aside>
         </div>
         <section id="live-preview" class="live-preview" aria-labelledby="live-preview-title" hidden>
           <div class="live-preview-heading"><div><p class="eyebrow">GENERATED SOURCE / READ ONLY</p><h2 id="live-preview-title" tabindex="-1">Live code preview</h2></div><span id="live-preview-state" class="status" role="status">Waiting for code</span></div>
@@ -54,7 +77,7 @@
           <p id="live-preview-file-state" class="fine muted"></p>
           <pre id="live-preview-code" tabindex="0" aria-label="Unvalidated live code preview" aria-live="off" hidden></pre>
         </section>
-        <section class="build-output" aria-labelledby="output-heading"><div class="panel-heading"><h2 id="output-heading">Build output</h2><div class="actions"><a id="download-build" class="secondary" hidden>Download build ZIP</a><button id="review-button" hidden>Compare changes</button><button id="cancel-build" class="danger" hidden>Cancel build</button></div></div><div id="build-log" class="build-log" role="log" aria-live="polite"><p>No build selected. Logs appear when a worker performs real steps.</p></div></section>
+        <section class="build-output" aria-labelledby="output-heading"><div class="panel-heading"><h2 id="output-heading">Build output</h2><div class="actions"><a id="download-build" class="secondary" hidden>Download build ZIP</a><button id="review-button" hidden>Compare changes</button><button id="cancel-build" class="danger" hidden>Cancel build</button></div></div><div class="build-result-summary"><span id="workbench-build-status" role="status" class="workbench-state" data-state="idle">Idle</span><p id="workbench-build-summary">Choose a saved build to inspect its result, or describe your next change.</p><button id="workbench-show-log" type="button">View technical log</button></div><details id="build-log-disclosure" class="build-technical"><summary>Technical log</summary><div id="build-log" class="build-log" role="log" aria-live="polite"><p>No build selected. Logs appear when a worker performs real steps.</p></div></details></section>
       </section>
       <section id="admin-view" hidden><div class="intro"><div><p class="eyebrow">NIGHTZ DEVELOPMENT</p><h1>Control room.</h1><p>Access, integrations and generation limits. Every privileged change leaves an audit record.</p></div><button id="refresh-roles">Refresh Discord roles</button></div><div id="admin-tabs" class="tabs" role="tablist" aria-label="Administration"></div><div id="admin-content"></div></section>
       <footer>Nightz Development / AI Studio <span>Private projects. Explicit permissions. Real build events.</span></footer>

@@ -10,8 +10,8 @@ const root=new URL('../',import.meta.url),read=file=>readFile(new URL(file,root)
 test('agent assets are built, previewed, published and byte-probed alongside billing assets',async t=>{
   const build=await read('scripts/build.mjs'),serve=await read('scripts/serve.mjs'),publisher=await read('deploy/publish.sh');
   const names=publisher.match(/^files=\(([^)]+)\)/m)[1].split(' ');
-  assert.equal(names.length,27);assert.equal(new Set(names).size,names.length);
-  for(const file of ['billing.js','agent.html','agent.js','agent.css']){assert.ok(names.includes(file));assert.ok(build.includes(`'${file}'`));assert.ok(serve.includes(`'/${file}'`));}
+  assert.equal(names.length,29);assert.equal(new Set(names).size,names.length);
+  for(const file of ['billing.js','agent.html','agent.js','agent.css','workbench-ui.css','workbench-ui.js']){assert.ok(names.includes(file));assert.ok(build.includes(`'${file}'`));assert.ok(serve.includes(`'/${file}'`));}
   const dir=await mkdtemp(join(tmpdir(),'nd-agent-assets-'));t.after(()=>rm(dir,{recursive:true,force:true}));await mkdir(join(dir,'dist'));
   for(const file of names)await writeFile(join(dir,'dist',file),file);
   const probes=await deploymentProbes('frontend',pathToFileURL(`${dir}/`));assert.deepEqual(probes.map(p=>new URL(p.url).pathname.slice(1)),names);
