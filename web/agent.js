@@ -7,7 +7,7 @@ const requestId=()=>crypto.randomUUID();
 async function confirmAction(...args){const accepted=await confirmDialog(...args);$('content').focus({preventScroll:true});return accepted;}
 function showError(message){$('error').textContent=message;$('error').hidden=false;}
 function announce(message){$('notice').textContent=message;$('notice').hidden=false;}
-function setPanel(name){$('workbench').dataset.panel=name;document.querySelectorAll('.mobile-tabs [data-panel]').forEach(button=>button.setAttribute('aria-selected',String(button.dataset.panel===name)));document.dispatchEvent(new Event('studio:workbench-view'));}
+function setPanel(name){$('workbench').dataset.panel=name;document.querySelectorAll('.mobile-tabs [data-panel]').forEach(button=>button.setAttribute('aria-selected',String(button.dataset.panel===name)));if(name==='code')showTool('files');if(name==='plan')showTool('progress');document.dispatchEvent(new Event('studio:workbench-view'));}
 async function api(path,{method='GET',body}={}){
   const session=state.session;
   const headers=body===undefined?{}:{'content-type':'application/json','x-csrf-token':session?.csrf||''};
@@ -44,6 +44,7 @@ function renderControls(){
   $('resume')&&($('resume').disabled=!t||!['paused','awaiting_input'].includes(t.state)||t.unreconciled);
   $('stop')&&($('stop').disabled=!t||ended.has(t.state)||t.control==='stop');
   $('undo')&&($('undo').disabled=!t||t.state!=='completed'||!t.appliedVersion||Boolean(t.undoVersion));
+  for(const id of ['pause','resume','stop','undo']){const node=$(id);if(node)node.classList.toggle('is-unavailable',node.disabled);}
   $('approve')&&($('approve').hidden=t?.state!=='awaiting_approval');
   $('edit-plan')&&($('edit-plan').hidden=t?.state!=='awaiting_approval');
   $('export')&&($('export').hidden=!t);if(t&&$('export'))$('export').href=`/api/agent/tasks/${t.id}/export`;
@@ -57,6 +58,7 @@ function renderControls(){
   if($('quote')) $('quote').textContent=model?`${model.label} / ${model.provider}. ${state.bootstrap.catalog.billing?.enabled?'Maximum metered allowance':'Fixed successful-task quote'}: ${state.bootstrap.catalog.creditsEnabled?model.creditsPerBuild:0} Studio credits. Provider allowance: ${money(model.maxBudgetMicros)}, including planning. ${model.workerReady?'':'Agent worker is not ready.'}`:'Enable a compatible model in Control room first.';
   if($('top-project')) $('top-project').textContent=state.project?state.project.name:'No project';
   if($('top-session')) $('top-session').textContent=state.chat?state.chat.title:'Select session';
+  if($('chat-title')) $('chat-title').textContent=state.chat?state.chat.title:'Conversation';
   renderSidebar();
 }
 function renderPlan(){
@@ -89,9 +91,13 @@ function renderSidebar(){
   list.replaceChildren();
   if(!state.chats.length){list.append(element('p','fine','No conversations yet.'));return;}
   state.chats.forEach(chat=>{
-    const row=element('div','sess'+(state.chat&&state.chat.id===chat.id?' active':''));
+    const active=state.chat&&state.chat.id===chat.id;
+    const row=element('div','sess'+(active?' active':''));
+    row.tabIndex=0;row.setAttribute('role','button');row.setAttribute('aria-current',active?'true':'false');
     row.append(element('span','t',chat.title),element('span','ts',new Date(chat.updatedAt||Date.now()).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})));
-    row.addEventListener('click',()=>work(null,()=>openChat(chat.id)));
+    const open=()=>work(null,()=>openChat(chat.id));
+    row.addEventListener('click',open);
+    row.addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();open();}});
     list.append(row);
   });
 }
@@ -113,7 +119,7 @@ async function refresh(){
   }finally{state.polling=false;}
 }
 function keepComposer(){if(state.project&&state.chat)state.composerDrafts.set(`${state.project.id}:${state.chat.id}`,$('message').value);}
-async function openChat(id){keepComposer();const scope=state.scope,chatScope=++state.chatScope,taskScope=++state.taskScope;state.chat=state.chats.find(chat=>chat.id===id)||null;if($('message')) $('message').value=state.composerDrafts.get(`${state.project?.id}:${id}`)||'';state.messageRevision++;state.pendingTask=null;state.pendingMessage=null;state.task=null;state.tasks=[];state.files=[];state.viewKey='';state.planKey='';if(!state.chat){if($('messages')) $('messages').replaceChildren(element('p','muted','Create a named conversation for this project.'));renderPlan();renderControls();return;}const view=await api(`/api/agent/chats/${id}`);if(scope!==state.scope||chatScope!==state.chatScope)return;state.tasks=view.tasks;const selected=state.tasks[0];const loaded=selected?(await api(`/api/agent/tasks/${selected.id}`)).task:null;if(scope!==state.scope||chatScope!==state.chatScope||taskScope!==state.taskScope)return;if(!loaded||loaded.id!==state.task?.id||loaded.version>=state.task.version)state.task=loaded;renderChat(view);renderSidebar();}
+async function openChat(id){keepComposer();const scope=state.scope,chatScope=++state.chatScope,taskScope=++state.taskScope;state.chat=state.chats.find(chat=>chat.id===id)||null;const chatSelect=$('chat-select');if(chatSelect&&id&&[...chatSelect.options].some(option=>option.value===id)&&chatSelect.value!==id){chatSelect.value=id;refreshSelects(chatSelect.parentElement);}if($('message')) $('message').value=state.composerDrafts.get(`${state.project?.id}:${id}`)||'';state.messageRevision++;state.pendingTask=null;state.pendingMessage=null;state.task=null;state.tasks=[];state.files=[];state.viewKey='';state.planKey='';if(!state.chat){if($('messages')) $('messages').replaceChildren(element('p','muted','Create a named conversation for this project.'));renderPlan();renderControls();return;}const view=await api(`/api/agent/chats/${id}`);if(scope!==state.scope||chatScope!==state.chatScope)return;state.tasks=view.tasks;const selected=state.tasks[0];const loaded=selected?(await api(`/api/agent/tasks/${selected.id}`)).task:null;if(scope!==state.scope||chatScope!==state.chatScope||taskScope!==state.taskScope)return;if(!loaded||loaded.id!==state.task?.id||loaded.version>=state.task.version)state.task=loaded;renderChat(view);renderSidebar();}
 async function openProject(id){persistDrafts();keepComposer();const scope=++state.scope;state.chatScope++;state.project=null;state.chat=null;state.task=null;state.tasks=[];state.files=[];state.selected=null;state.drafts.clear();state.pendingTask=null;state.pendingMessage=null;renderEditor(true);renderControls();const data=await api(`/api/agent/projects/${id}`);if(scope!==state.scope)return;state.project=data.project;state.policy=data.policy;state.chats=data.chats;restoreDrafts();const cs=$('chat-select');if(cs)options(cs,state.chats.length?state.chats.map(chat=>[chat.id,chat.title]):[['','Create a conversation']]);$('history').href=`/workspace.html#project/${id}`;history.replaceState(null,'',`#project/${id}`);if($('agent-project-title')) $('agent-project-title').textContent=state.project.name;if($('agent-project-context')) $('agent-project-context').textContent=`${state.project.target} / Private project / Plan approval before source changes`;document.dispatchEvent(new Event('studio:workbench-view'));$('composer')&&($('composer').elements.continuation.value=data.policy.continuation);refreshSelects($('composer'));renderEditor(true);await presence();const firstChatId=cs?cs.value:(state.chats[0]?state.chats[0].id:null);if(firstChatId)await openChat(firstChatId);if(scope===state.scope)$('connection').textContent='Project synchronized';renderSidebar();if($('tool-files')&&!$('tool-files').hidden)renderEditor(true);}
 const ps=$('project-select'); if(ps) ps.addEventListener('change',()=>work(null,()=>openProject(ps.value)));
 const cs2=$('chat-select'); if(cs2) cs2.addEventListener('change',()=>work(null,()=>openChat(cs2.value)));
@@ -230,5 +236,5 @@ const ns=$('new-session'); if(ns) ns.addEventListener('click',()=> chatDialog(fa
 const ss=$('side-settings'); if(ss) ss.addEventListener('click',()=>{$('project-instructions')&&$('project-instructions').click();});
 if($('composer')) $('composer').addEventListener('submit',event=>{ /* existing listener already attached */ });
 
-try{state.session=await api('/api/session');if(!state.session.user){$('login').hidden=false;}else{state.bootstrap=await api('/api/agent/bootstrap');const ws=$('workspace');if(ws)ws.hidden=false;const acc=$('account-name');if(acc&&state.session.user)acc.textContent=state.session.user.displayName||'Owner';const projects=state.bootstrap.projects;const ps=$('project-select');if(ps){options(ps,projects.length?projects.map(p=>[p.id,p.name]):[['','Create a project first']]);}const models=state.bootstrap.catalog.models;options($('model-select'),models.length?models.map(m=>[m.id,`${m.label} / ${m.provider}`,!m.workerReady]):[['','No enabled coding models']],state.bootstrap.catalog.defaultModelId);refreshSelects();const selected=/^#project\/([a-f0-9-]{36})$/.exec(location.hash)?.[1];if(projects.length){const id=projects.some(p=>p.id===selected)?selected:projects[0].id;if(ps)ps.value=id;refreshSelects();await openProject(id);}else {renderControls();renderSidebar();}} if(state.chats&&state.chats.length)renderSidebar();}
+try{state.session=await api('/api/session');if(!state.session.user){$('login').hidden=false;}else{state.bootstrap=await api('/api/agent/bootstrap');const ws=$('workspace');if(ws)ws.hidden=false;const acc=$('account-name');if(acc&&state.session.user)acc.textContent=state.session.user.displayName||'Owner';const avatar=$('account-avatar');if(avatar&&state.session.user)avatar.textContent=(state.session.user.displayName||'ND').trim().slice(0,1).toUpperCase()||'N';const projects=state.bootstrap.projects;const ps=$('project-select');if(ps){options(ps,projects.length?projects.map(p=>[p.id,p.name]):[['','Create a project first']]);}const models=state.bootstrap.catalog.models;options($('model-select'),models.length?models.map(m=>[m.id,`${m.label} / ${m.provider}`,!m.workerReady]):[['','No enabled coding models']],state.bootstrap.catalog.defaultModelId);refreshSelects();const selected=/^#project\/([a-f0-9-]{36})$/.exec(location.hash)?.[1];if(projects.length){const id=projects.some(p=>p.id===selected)?selected:projects[0].id;if(ps)ps.value=id;refreshSelects();await openProject(id);}else {renderControls();renderSidebar();}} if(state.chats&&state.chats.length)renderSidebar();}
 catch(error){showError(error.message);if($('connection'))$('connection').textContent='Not connected';$('login').hidden=false;}

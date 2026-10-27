@@ -16,7 +16,7 @@
 <a class="skip" href="#content">Skip to workspace</a>
 <div class="app-topbar">
   <div class="app-brand"><img src="/nd-logo.webp" width="22" height="22" alt=""><span>ND AI Studio</span></div>
-  <div class="app-top-meta"><span id="top-project">No project</span><span class="sep">·</span><span id="top-session">Select a session</span></div>
+  <div class="app-top-meta"><span id="top-project">No project</span><span class="sep" aria-hidden="true">/</span><span id="top-session">Select a session</span></div>
   <div class="app-top-actions">
     <button id="new-session" type="button" class="top-btn">New session</button>
     <button id="project-instructions" type="button" class="top-btn" disabled>Instructions</button>
@@ -24,39 +24,40 @@
     <span id="connection" class="conn" role="status">Connecting</span>
   </div>
 </div>
+<nav class="mobile-tabs" aria-label="Workspace panels"><button type="button" data-panel="chat" aria-selected="true">Chat</button><button type="button" data-panel="code">Files</button><button type="button" data-panel="plan">Progress</button></nav>
 <div class="app-body" id="workbench" data-panel="chat">
   <aside class="sidebar" id="workspace">
     <h1 id="agent-project-title" class="sr-only">Your project, in conversation.</h1>
     <p id="agent-project-context" class="sr-only">Inspect. Approve a plan. Build with your chosen model.</p>
     <label class="side-select">Project <select id="project-select" aria-label="Project"></select></label>
-    <label class="side-select">Conversation <select id="chat-select" aria-label="Conversation"></select></label>
+    <label class="side-select side-mirror">Conversation <select id="chat-select" aria-label="Conversation"></select></label>
     <button id="new-chat" type="button" hidden>New chat</button>
-    <button id="rename-chat" type="button" hidden>Rename chat</button>
-    <div class="account">
-      <div class="avatar" id="account-avatar"></div>
-      <div>
-        <div id="account-name">Jake</div>
-        <div class="fine">Nightz Development</div>
-      </div>
-    </div>
-    <button id="new-session-btn" type="button" class="new-session">+ New session</button>
-    <nav class="side-nav">
-      <a href="#projects">Projects</a>
-      <a href="/workspace.html#billing">Plans &amp; usage</a>
-      <a href="/#account">Account</a>
-    </nav>
+    <button id="new-session-btn" type="button" class="new-session">New session</button>
     <div class="sessions">
       <div class="sessions-head">Sessions</div>
       <div id="session-list" class="session-list"></div>
     </div>
+    <nav class="side-nav" aria-label="Studio">
+      <a href="/workspace.html#projects">Projects</a>
+      <a href="/workspace.html#billing">Plans &amp; usage</a>
+      <a href="/#account">Account</a>
+    </nav>
     <div class="side-foot">
-      <button id="side-settings" type="button" class="side-link">Settings</button>
+      <div class="account">
+        <div class="avatar" id="account-avatar" aria-hidden="true"></div>
+        <div class="account-copy">
+          <div id="account-name">Account</div>
+          <div class="fine">Owner workspace</div>
+        </div>
+      </div>
+      <button id="side-settings" type="button" class="side-link">Instructions</button>
     </div>
   </aside>
   <div class="chat-area" id="content" tabindex="-1">
     <div class="chat-head">
-      <div>
+      <div class="chat-title-wrap">
         <span id="chat-title">Conversation</span>
+        <button id="rename-chat" type="button" disabled>Rename</button>
         <span id="chat-meta" class="fine"></span>
       </div>
       <div class="chat-status"><span id="task-state-dot" class="status-dot"></span><span id="task-state">Awaiting instructions</span></div>
@@ -75,37 +76,43 @@
     <div id="messages" class="messages" aria-live="polite"></div>
     <div class="composer-anchor">
       <form id="composer">
+        <label class="request-label" for="message">Message</label>
         <textarea id="message" name="message" rows="2" maxlength="12000" placeholder="Describe a change, ask a question, or reference @client/main.lua" required></textarea>
-        <p id="quote" class="fine"></p>
         <div class="composer-bar">
-          <span id="composer-context" class="fine"></span>
           <div class="composer-ctrls">
             <label class="mini">Mode <select name="mode" id="mode-select"><option value="build">Plan &amp; build</option><option value="ask">Ask</option><option value="debug">Debug</option></select></label>
             <label class="mini">Model <select id="model-select" name="modelId"></select></label>
+          </div>
+          <button type="submit" class="send" id="send">Send</button>
+        </div>
+        <p id="quote" class="fine"></p>
+        <span id="composer-context" class="fine"></span>
+        <details class="composer-more">
+          <summary>Run options</summary>
+          <div class="composer-more-grid">
             <label class="mini">Active task <select name="messageMode"><option value="queue">Queue message</option><option value="pause">Pause and discuss</option><option value="redirect">Redirect and replan</option></select></label>
             <label class="mini">Disconnect <select name="continuation"><option value="pause">Pause safely</option><option value="finish-current">Finish current task</option></select></label>
             <label class="mini">Calls <input name="maxSteps" type="number" min="4" max="24" value="16" required></label>
-            <button type="submit" class="send" id="send">Send</button>
           </div>
-        </div>
+        </details>
       </form>
     </div>
   </div>
   <aside class="tools">
     <div class="tools-head">
       <span>Workspace</span>
-      <button id="tools-close" type="button" aria-label="Close tool">×</button>
+      <button id="tools-close" type="button" aria-label="Close tool">Close</button>
     </div>
     <div id="tools-empty">
       <div class="tool-list">
-        <button type="button" data-tool="files" class="tool-item"><span class="icon">📁</span><div><strong>Files</strong><span class="fine">Browse and edit source</span></div></button>
-        <button type="button" data-tool="changes" class="tool-item"><span class="icon">↻</span><div><strong>Changes</strong><span class="fine">Staged and revisions</span></div></button>
-        <button type="button" data-tool="progress" class="tool-item"><span class="icon">◷</span><div><strong>Progress</strong><span class="fine">Agent events and logs</span></div></button>
+        <button type="button" data-tool="files" class="tool-item"><div><strong>Files</strong><span class="fine">Browse and edit source</span></div></button>
+        <button type="button" data-tool="changes" class="tool-item"><div><strong>Changes</strong><span class="fine">Staged and revisions</span></div></button>
+        <button type="button" data-tool="progress" class="tool-item"><div><strong>Progress</strong><span class="fine">Agent events and logs</span></div></button>
       </div>
-      <p class="fine muted">Select a tool to open real workspace content.</p>
+      <p class="fine muted">Saved source stays separate from agent staging.</p>
     </div>
     <div id="tool-files" class="tool-pane" hidden>
-      <div class="tool-subhead">Files <button id="tool-files-close" type="button" class="mini-close">×</button></div>
+      <div class="tool-subhead">Files <button id="tool-files-close" type="button" class="mini-close">Close</button></div>
       <div class="editor-font-tools" role="group" aria-label="Code text size"><button type="button" data-font-size="decrease" aria-label="Decrease code text size">A-</button><output id="workbench-font-size" aria-live="polite">14 px</output><button type="button" data-font-size="increase" aria-label="Increase code text size">A+</button></div>
       <label class="file-search"><span class="sr-only">Filter source files</span><input id="workbench-file-search" type="search" placeholder="Find a file..." autocomplete="off"></label>
       <div class="editor-controls"><label>Source <select id="source-mode"><option value="saved">Saved project</option><option value="staged">Agent staging (read-only)</option></select></label><button id="attach-file" type="button" disabled>Reference file</button></div>
