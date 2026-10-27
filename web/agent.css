@@ -9,7 +9,7 @@
 .nd-workbench{--bg:#1b1b1b;--panel:#1e1e1e;--sidebar:#1c1c1c;--composer:#292929;--border:#2d2d2d;--text:#d4d4d4;--muted:#909090;--fine:#707070;--accent:#3a7ca5}
 .nd-workbench,.nd-workbench *{font:13px/1.5 Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
 html:has(body.nd-workbench),body.nd-workbench{height:100%;margin:0;background:#1b1b1b;color:#d4d4d4}
-body.nd-workbench{display:flex;flex-direction:column;min-height:100dvh;overflow:hidden}
+body.nd-workbench{display:flex;flex-direction:column;height:100dvh;max-height:100dvh;min-height:0;overflow:hidden}
 .nd-workbench button,input,select,textarea{font:inherit}
 .nd-workbench .app-topbar{height:40px;display:flex;align-items:center;gap:14px;padding:0 10px;border-bottom:1px solid var(--border);background:#171717;font-size:12px;flex-shrink:0}
 .nd-workbench .app-brand{display:flex;align-items:center;gap:6px;font-weight:600}
@@ -32,15 +32,15 @@ body.nd-workbench{display:flex;flex-direction:column;min-height:100dvh;overflow:
 .nd-workbench .session-list .sess .t{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .nd-workbench .session-list .sess .ts{font-size:9px;color:var(--fine)}
 .nd-workbench .side-foot{padding:6px 10px;border-top:1px solid var(--border)}
-.nd-workbench .chat-area{flex:1;display:flex;flex-direction:column;min-width:0;background:var(--panel)}
+.nd-workbench .chat-area{flex:1;display:flex;flex-direction:column;min-width:0;min-height:0;overflow:hidden;background:var(--panel)}
 .nd-workbench .chat-head{height:34px;display:flex;align-items:center;justify-content:space-between;padding:0 10px;border-bottom:1px solid var(--border);font-size:11px;flex-shrink:0}
 .nd-workbench .chat-head .fine{color:var(--fine)}
 .nd-workbench .status-dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:#d4a05a;margin-right:4px;vertical-align:middle}
-.nd-workbench .messages{flex:1;overflow:auto;padding:8px 6px;font-size:13px;line-height:1.4}
+.nd-workbench .messages{flex:1 1 auto;min-height:0;overflow-x:hidden;overflow-y:auto;padding:8px 6px;font-size:13px;line-height:1.4}
 .nd-workbench .messages .bubble{padding:4px 8px;margin:2px 8px;max-width:82%;border-radius:2px}
 .nd-workbench .messages .user{background:#292929;margin-left:auto}
 .nd-workbench .messages .assistant{background:transparent}
-.nd-workbench .composer-anchor{padding:6px 8px;background:#171717;border-top:1px solid var(--border);flex-shrink:0}
+.nd-workbench .composer-anchor{flex:0 0 auto;position:sticky;bottom:0;z-index:4;padding:8px;background:#171717;border-top:1px solid var(--border)}
 .nd-workbench .composer-anchor textarea{width:100%;background:#252525;border:1px solid var(--border);border-radius:3px;padding:6px;font-size:12px;min-height:38px;resize:vertical}
 .nd-workbench .composer-bar{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:4px;font-size:10px}
 .nd-workbench .composer-ctrls{display:flex;gap:6px;align-items:center;flex-wrap:wrap;width:100%}
@@ -60,7 +60,12 @@ body.nd-workbench{display:flex;flex-direction:column;min-height:100dvh;overflow:
 .nd-workbench .file-list-compact{max-height:120px;overflow:auto;border:1px solid var(--border);padding:2px;font-size:10px}
 .nd-workbench .task-controls{display:flex;flex-wrap:wrap;gap:4px;padding:4px 8px;border-bottom:1px solid var(--border);background:#171717}
 .nd-workbench .task-controls button,.nd-workbench .task-controls a{flex:0 0 auto;width:auto;min-height:28px;padding:2px 8px;font-size:11px}
-body.nd-workbench #error,body.nd-workbench #notice{position:fixed;left:284px;right:392px;bottom:12px;z-index:30;margin:0}
+body.nd-workbench #error,body.nd-workbench #notice{position:fixed;left:284px;right:392px;top:48px;bottom:auto;z-index:30;margin:0}
+body.studio-surface.nd-workbench[data-workspace="agent"] #workbench{display:flex;grid-template-columns:none;height:auto;min-height:0;max-height:none;flex:1 1 auto;overflow:hidden;border:0;border-radius:0}
+body.studio-surface.nd-workbench[data-workspace="agent"] .sidebar,body.studio-surface.nd-workbench[data-workspace="agent"] .tools{min-height:0;overflow:auto}
+body.studio-surface.nd-workbench[data-workspace="agent"] .chat-area>.messages{flex:1 1 auto;min-height:0;height:auto;max-height:none;overflow-x:hidden;overflow-y:auto}
+body.studio-surface.nd-workbench[data-workspace="agent"] .composer-anchor{flex:0 0 auto}
+body.studio-surface.nd-workbench[data-workspace="agent"] #composer{max-height:34vh;overflow:auto}
 .nd-workbench .side-select{display:block;padding:4px 10px;font-size:10px;color:var(--muted)}
 .nd-workbench .side-select select,.nd-workbench .composer-ctrls input{width:100%;font-size:11px;background:#252525;border:1px solid var(--border)}
 .nd-workbench .composer-ctrls input{width:52px}
