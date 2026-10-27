@@ -1,6 +1,7 @@
 const controls = new WeakMap();
 let sequence = 0;
 let active;
+let outsideRegistered = false;
 
 export function enhanceSelect(select) {
   if (controls.has(select)) { controls.get(select).refresh(); return; }
@@ -19,6 +20,12 @@ export function enhanceSelect(select) {
   list.setAttribute('aria-label', button.getAttribute('aria-label'));
   select.insertAdjacentElement('afterend', wrapper); wrapper.append(button, list);
   select.hidden = true;
+  if (!outsideRegistered) {
+    outsideRegistered = true;
+    document.addEventListener('pointerdown', event => {
+      if (active && active.wrapper && !active.wrapper.contains(event.target)) active.close();
+    });
+  }
   let focused = 0, options = [], typed = '', lastType = 0;
   const enabled = index => Boolean(select.options[index] && !select.options[index].disabled && !select.options[index].parentElement?.disabled);
   const firstEnabled = () => [...select.options].findIndex((option,index) => enabled(index));
@@ -41,19 +48,26 @@ export function enhanceSelect(select) {
       select.selectedIndex = focused;
       select.dispatchEvent(new Event('change', { bubbles: true }));
     }
-    list.hidden = true; button.setAttribute('aria-expanded', 'false'); button.removeAttribute('aria-activedescendant');
+    list.hidden = true; list.classList.remove('up'); button.setAttribute('aria-expanded', 'false'); button.removeAttribute('aria-activedescendant');
     if (active?.close === close) active = null;
     refresh();
   }
   function open() {
     if (select.disabled) return;
-    active?.close(); active = { close };
+    active?.close();
     focused = enabled(select.selectedIndex) ? select.selectedIndex : firstEnabled(); list.hidden = false;
+    const rect = button.getBoundingClientRect();
+    const estimatedListHeight = 220;
+    const up = (window.innerHeight - rect.bottom) < estimatedListHeight && rect.top > estimatedListHeight;
+    list.classList.toggle('up', up);
+    active = { close, wrapper };
     button.setAttribute('aria-expanded', 'true'); paint();
   }
   function refresh() {
     button.textContent = select.selectedOptions[0]?.textContent || 'Choose an option';
     button.disabled = select.disabled;
+    const wasHidden = list.hidden;
+    const prevFocused = focused;
     options = [...select.options].map((option, index) => {
       const node = document.createElement('span'); node.className = 'select-option'; node.id = `${id}-${index}`;
       node.setAttribute('role', 'option'); node.setAttribute('aria-disabled',String(!enabled(index))); node.textContent = option.textContent;
@@ -61,7 +75,13 @@ export function enhanceSelect(select) {
       node.addEventListener('click', () => { if(!enabled(index))return; focused = index; close(true); button.focus(); });
       return node;
     });
-    list.replaceChildren(...options); paint();
+    list.replaceChildren(...options);
+    if (!wasHidden) {
+      list.hidden = false;
+      button.setAttribute('aria-expanded', 'true');
+      focused = enabled(prevFocused) ? prevFocused : firstEnabled();
+    }
+    paint();
   }
   button.addEventListener('click', () => list.hidden ? open() : close());
   button.addEventListener('keydown', event => {
@@ -87,7 +107,6 @@ export function enhanceSelect(select) {
     }
   });
   button.addEventListener('blur', () => close());
-  document.addEventListener('pointerdown', event => { if (!wrapper.contains(event.target)) close(); });
   select.addEventListener('change', refresh);
   select.addEventListener('invalid', event => { event.preventDefault(); button.focus(); button.setAttribute('aria-invalid', 'true'); });
   select.form?.addEventListener('reset', () => queueMicrotask(() => { close(); button.removeAttribute('aria-invalid'); }));

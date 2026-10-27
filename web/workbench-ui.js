@@ -9,7 +9,8 @@ export function normalizeDisplay(value) {
 }
 export function sourceLineCount(value) { return typeof value==='string'?value.split('\n').length:1; }
 export function describeBuild(value) {
-  const state=String(value||'idle').trim().toLowerCase();
+  let state=String(value||'idle').trim().toLowerCase();
+  if(state==='completed')state='applied';
   const descriptions={
     idle:['Idle','Choose a saved build to inspect its result, or describe your next change.'],
     queued:['Queued','Waiting for a worker. This build has not replaced your saved source.'],
