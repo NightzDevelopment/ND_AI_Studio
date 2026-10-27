@@ -8,7 +8,8 @@
 /* ND AI Studio desktop workbench redesign - restrained IDE aesthetic matching reference */
 .nd-workbench{--bg:#1b1b1b;--panel:#1e1e1e;--sidebar:#1c1c1c;--composer:#292929;--border:#2d2d2d;--text:#d4d4d4;--muted:#909090;--fine:#707070;--accent:#3a7ca5}
 .nd-workbench,.nd-workbench *{font:13px/1.5 Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
-.nd-workbench body,.nd-workbench html{height:100%;margin:0;background:var(--bg);color:var(--text);overflow:hidden}
+html:has(body.nd-workbench),body.nd-workbench{height:100%;margin:0;background:#1b1b1b;color:#d4d4d4}
+body.nd-workbench{display:flex;flex-direction:column;min-height:100dvh;overflow:hidden}
 .nd-workbench button,input,select,textarea{font:inherit}
 .nd-workbench .app-topbar{height:40px;display:flex;align-items:center;gap:14px;padding:0 10px;border-bottom:1px solid var(--border);background:#171717;font-size:12px;flex-shrink:0}
 .nd-workbench .app-brand{display:flex;align-items:center;gap:6px;font-weight:600}
@@ -41,21 +42,25 @@
 .nd-workbench .messages .assistant{background:transparent}
 .nd-workbench .composer-anchor{padding:6px 8px;background:#171717;border-top:1px solid var(--border);flex-shrink:0}
 .nd-workbench .composer-anchor textarea{width:100%;background:#252525;border:1px solid var(--border);border-radius:3px;padding:6px;font-size:12px;min-height:38px;resize:vertical}
-.nd-workbench .composer-bar{display:flex;gap:6px;align-items:center;margin-top:4px;font-size:10px}
-.nd-workbench .composer-ctrls{display:flex;gap:4px;align-items:center;margin-left:auto}
-.nd-workbench .composer-ctrls select{font-size:10px;padding:2px 4px}
-.nd-workbench .send{padding:4px 10px;background:var(--action);color:#fff;border-radius:2px;font-size:11px}
+.nd-workbench .composer-bar{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:4px;font-size:10px}
+.nd-workbench .composer-ctrls{display:flex;gap:6px;align-items:center;flex-wrap:wrap;width:100%}
+.nd-workbench .composer-ctrls label{flex-direction:row;align-items:center;gap:4px;font-size:10px;font-weight:500}
+.nd-workbench .composer-ctrls select{font-size:10px;padding:2px 4px;max-width:140px}
+.nd-workbench .send{flex:0 0 auto;min-height:28px;padding:4px 12px;background:var(--action);color:#fff;border-radius:2px;font-size:11px}
 .nd-workbench .tools{width:380px;background:#1e1e1e;border-left:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0}
 .nd-workbench .tools-head{height:34px;display:flex;align-items:center;justify-content:space-between;padding:0 8px;border-bottom:1px solid var(--border);font-size:11px}
 .nd-workbench .tool-list{display:flex;flex-direction:column;padding:4px;gap:1px}
-.nd-workbench .tool-item{display:flex;gap:8px;width:100%;padding:5px 6px;text-align:left;background:transparent;border:0;font-size:11px}
+.nd-workbench .tool-item{display:flex;gap:8px;width:100%;padding:8px 6px;text-align:left;justify-content:flex-start;align-items:flex-start;background:transparent;border:0;font-size:11px;min-height:0}
+.nd-workbench .tool-item div{display:flex;flex-direction:column;align-items:flex-start;min-width:0}
+.nd-workbench .tool-item .fine{display:block}
 .nd-workbench .tool-item:hover{background:#252525}
 .nd-workbench .tool-item .icon{opacity:.85}
 .nd-workbench .tool-pane{flex:1;padding:6px;overflow:auto;font-size:12px}
 .nd-workbench .tool-subhead{font-size:10px;color:var(--fine);margin-bottom:4px}
 .nd-workbench .file-list-compact{max-height:120px;overflow:auto;border:1px solid var(--border);padding:2px;font-size:10px}
 .nd-workbench .task-controls{display:flex;flex-wrap:wrap;gap:4px;padding:4px 8px;border-bottom:1px solid var(--border);background:#171717}
-.nd-workbench .task-controls button,.nd-workbench .task-controls a{min-height:24px;padding:2px 6px;font-size:10px}
+.nd-workbench .task-controls button,.nd-workbench .task-controls a{flex:0 0 auto;width:auto;min-height:28px;padding:2px 8px;font-size:11px}
+body.nd-workbench #error,body.nd-workbench #notice{position:fixed;left:284px;right:392px;bottom:12px;z-index:30;margin:0}
 .nd-workbench .side-select{display:block;padding:4px 10px;font-size:10px;color:var(--muted)}
 .nd-workbench .side-select select,.nd-workbench .composer-ctrls input{width:100%;font-size:11px;background:#252525;border:1px solid var(--border)}
 .nd-workbench .composer-ctrls input{width:52px}
