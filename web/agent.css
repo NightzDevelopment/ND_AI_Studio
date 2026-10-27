@@ -4,3 +4,58 @@
 .custom-select{position:relative;display:block;width:100%}.select-trigger{position:relative;width:100%;min-height:40px;padding:9px 30px 9px 11px;background:#0e0d12;border:1px solid #39313d;border-radius:8px;text-align:left;font-size:12px;line-height:1.5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.select-trigger::after{content:'⌄';position:absolute;right:11px;top:9px;font-size:14px;color:#e1a6b6}.select-trigger[aria-expanded=true]{border-color:#c95472}.select-options{position:absolute;left:0;right:0;top:calc(100% + 5px);z-index:50;display:block;padding:4px;max-height:210px;overflow-y:auto;overscroll-behavior:contain;background:#211a24;border:1px solid #5a3548;border-radius:8px;box-shadow:0 12px 32px #000a}.select-options.up{top:auto;bottom:calc(100% + 5px)}.select-option{display:block;padding:8px 18px 8px 9px;border-radius:4px;font-size:12px;cursor:pointer;line-height:1.5}.select-option.is-active,.select-option:hover{background:#432435;color:#fff}.select-option[aria-disabled=true]{opacity:.5;cursor:not-allowed}.select-option[aria-selected=true]::after{content:'✓';position:absolute;right:8px;color:#ff90a7}
 .studio-surface ::-webkit-scrollbar{width:6px;height:6px}.studio-surface ::-webkit-scrollbar-track{background:#16131b}.studio-surface ::-webkit-scrollbar-thumb{background:#5f3a46;border-radius:3px}.studio-surface ::-webkit-scrollbar-thumb:hover{background:#70404f}
 .messages,.plan-panel,.file-list,.build-log,textarea#code,.code-wrap{scrollbar-width:thin;scrollbar-color:#5f3a46 #16131b}
+
+/* ND AI Studio desktop workbench redesign - restrained IDE aesthetic matching reference */
+.nd-workbench{--bg:#1b1b1b;--panel:#1e1e1e;--sidebar:#1c1c1c;--composer:#292929;--border:#2d2d2d;--text:#d4d4d4;--muted:#909090;--fine:#707070;--accent:#3a7ca5}
+.nd-workbench,.nd-workbench *{font:13px/1.5 Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+.nd-workbench body,.nd-workbench html{height:100%;margin:0;background:var(--bg);color:var(--text);overflow:hidden}
+.nd-workbench button,input,select,textarea{font:inherit}
+.nd-workbench .app-topbar{height:40px;display:flex;align-items:center;gap:14px;padding:0 10px;border-bottom:1px solid var(--border);background:#171717;font-size:12px;flex-shrink:0}
+.nd-workbench .app-brand{display:flex;align-items:center;gap:6px;font-weight:600}
+.nd-workbench .app-top-meta{flex:1;color:var(--muted);display:flex;gap:4px;font-size:11px}
+.nd-workbench .app-top-actions{display:flex;gap:6px}
+.nd-workbench .top-btn{padding:3px 8px;font-size:11px;border-radius:2px}
+.nd-workbench .app-body{flex:1;display:flex;min-height:0}
+.nd-workbench .sidebar{width:272px;background:var(--sidebar);border-right:1px solid var(--border);display:flex;flex-direction:column;font-size:12px;flex-shrink:0}
+.nd-workbench .account{display:flex;gap:8px;padding:8px 10px;border-bottom:1px solid var(--border)}
+.nd-workbench .avatar{width:26px;height:26px;border-radius:3px;background:#252525;display:flex;align-items:center;justify-content:center;font-size:10px}
+.nd-workbench .new-session{margin:6px 10px;padding:5px 8px;background:#252525;border-radius:3px;font-size:11px}
+.nd-workbench .side-nav{padding:2px 0;border-bottom:1px solid var(--border)}
+.nd-workbench .side-nav a{display:block;padding:4px 10px;color:var(--muted);font-size:11px}
+.nd-workbench .side-nav a:hover{background:#252525}
+.nd-workbench .sessions{flex:1;min-height:0;overflow:auto}
+.nd-workbench .sessions-head{padding:3px 10px;font-size:9px;color:var(--fine);text-transform:uppercase;letter-spacing:.6px}
+.nd-workbench .session-list .sess{display:flex;gap:6px;padding:3px 10px;font-size:11px;cursor:pointer;border-radius:2px}
+.nd-workbench .session-list .sess:hover{background:#252525}
+.nd-workbench .session-list .sess.active{background:#292929}
+.nd-workbench .session-list .sess .t{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.nd-workbench .session-list .sess .ts{font-size:9px;color:var(--fine)}
+.nd-workbench .side-foot{padding:6px 10px;border-top:1px solid var(--border)}
+.nd-workbench .chat-area{flex:1;display:flex;flex-direction:column;min-width:0;background:var(--panel)}
+.nd-workbench .chat-head{height:34px;display:flex;align-items:center;justify-content:space-between;padding:0 10px;border-bottom:1px solid var(--border);font-size:11px;flex-shrink:0}
+.nd-workbench .chat-head .fine{color:var(--fine)}
+.nd-workbench .status-dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:#d4a05a;margin-right:4px;vertical-align:middle}
+.nd-workbench .messages{flex:1;overflow:auto;padding:8px 6px;font-size:13px;line-height:1.4}
+.nd-workbench .messages .bubble{padding:4px 8px;margin:2px 8px;max-width:82%;border-radius:2px}
+.nd-workbench .messages .user{background:#292929;margin-left:auto}
+.nd-workbench .messages .assistant{background:transparent}
+.nd-workbench .composer-anchor{padding:6px 8px;background:#171717;border-top:1px solid var(--border);flex-shrink:0}
+.nd-workbench .composer-anchor textarea{width:100%;background:#252525;border:1px solid var(--border);border-radius:3px;padding:6px;font-size:12px;min-height:38px;resize:vertical}
+.nd-workbench .composer-bar{display:flex;gap:6px;align-items:center;margin-top:4px;font-size:10px}
+.nd-workbench .composer-ctrls{display:flex;gap:4px;align-items:center;margin-left:auto}
+.nd-workbench .composer-ctrls select{font-size:10px;padding:2px 4px}
+.nd-workbench .send{padding:4px 10px;background:var(--action);color:#fff;border-radius:2px;font-size:11px}
+.nd-workbench .tools{width:380px;background:#1e1e1e;border-left:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0}
+.nd-workbench .tools-head{height:34px;display:flex;align-items:center;justify-content:space-between;padding:0 8px;border-bottom:1px solid var(--border);font-size:11px}
+.nd-workbench .tool-list{display:flex;flex-direction:column;padding:4px;gap:1px}
+.nd-workbench .tool-item{display:flex;gap:8px;width:100%;padding:5px 6px;text-align:left;background:transparent;border:0;font-size:11px}
+.nd-workbench .tool-item:hover{background:#252525}
+.nd-workbench .tool-item .icon{opacity:.85}
+.nd-workbench .tool-pane{flex:1;padding:6px;overflow:auto;font-size:12px}
+.nd-workbench .tool-subhead{font-size:10px;color:var(--fine);margin-bottom:4px}
+.nd-workbench .file-list-compact{max-height:120px;overflow:auto;border:1px solid var(--border);padding:2px;font-size:10px}
+.nd-workbench .tool-editor textarea{width:100%;height:220px;background:#161616;border:1px solid var(--border);font:11px/1.35 ui-monospace,monospace;padding:4px}
+.nd-workbench .mini-btn{padding:1px 5px;font-size:9px}
+.nd-workbench .nd-workbench .notice{padding:8px;font-size:11px}
+@media(max-width:1024px){.nd-workbench .tools{width:280px}}
+@media(max-width:720px){.nd-workbench .sidebar{display:none}.nd-workbench .tools{display:none}}
