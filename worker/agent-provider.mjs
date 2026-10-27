@@ -1,5 +1,7 @@
 import { providerPayload, price, reserveFor } from './provider.mjs';
 import { insist, digest } from '../server/studio-domain.mjs';
+import { actionData } from '../server/agent-actions.mjs';
+import { failureDiagnostic, providerHttpDiagnostic } from '../server/agent-errors.mjs';
 
 const endpoints=Object.freeze({openai:'https://api.openai.com/v1/responses',deepseek:'https://api.deepseek.com/responses'});
 const nullableString={type:['string','null']};
@@ -33,39 +35,66 @@ export function prepareAgentRequest(context){
   const estimateMicros=reserveFor(payload,settings),body=JSON.stringify(payload);
   return {endpoint:endpoints[settings.provider||'openai'],payload,body,estimateMicros,requestHash:digest(body)};
 }
-async function readResponse(response,signal){
+async function readResponse(response,signal,limit=2097152){
   insist(response.body,502,'Provider response body is missing.');
   const reader=response.body.getReader(),parts=[];let bytes=0;
   const abort=()=>{reader.cancel().catch(()=>{});};signal?.addEventListener('abort',abort,{once:true});
-  try{while(true){signal?.throwIfAborted();const chunk=await reader.read();if(chunk.done)break;bytes+=chunk.value.byteLength;insist(bytes<=2097152,502,'Agent response exceeded the size limit.');parts.push(Buffer.from(chunk.value));}signal?.throwIfAborted();return JSON.parse(Buffer.concat(parts).toString('utf8'));}
+  try{while(true){signal?.throwIfAborted();const chunk=await reader.read();if(chunk.done)break;bytes+=chunk.value.byteLength;insist(bytes<=limit,502,'Agent response exceeded the size limit.');parts.push(Buffer.from(chunk.value));}signal?.throwIfAborted();return JSON.parse(Buffer.concat(parts).toString('utf8'));}
   finally{signal?.removeEventListener('abort',abort);await reader.cancel().catch(()=>{});reader.releaseLock();}
 }
+function failureCategory(stage,error,requestSignal,signal){
+  const transportFailure=stage==='transport'||stage==='response'&&(requestSignal?.aborted||error instanceof TypeError||['TimeoutError','AbortError'].includes(error?.name));
+  if(transportFailure)return requestSignal?.aborted&&!signal?.aborted||error?.name==='TimeoutError'?'provider_timeout':'provider_network';
+  if(stage==='response'||stage==='output')return 'provider_output';
+  if(stage==='accounting')return 'usage_unreconciled';
+  if(stage==='action')return 'invalid_action';
+  return 'platform';
+}
 export async function requestAgentAction(context,prepared,{key,signal,fetcher=fetch}={}){
-  let cost=null,unreconciled=false,usage=null,dispatched=false;
+  let cost=null,unreconciled=false,usage=null,dispatched=false,stage='prepare',diagnostic,requestSignal,requestId,responseId;
   try{
     insist(typeof key==='string'&&key.length>10&&!/[\r\n]/.test(key),503,'Provider credentials are not configured.');
     const expected=prepareAgentRequest(context);
     insist(prepared.body===expected.body&&prepared.endpoint===expected.endpoint,400,'Agent request changed after approval.');
     insist(context.spentMicros+prepared.estimateMicros<=context.budgetMicros,409,'The next step exceeds the approved task allowance.');
-    const timeout=AbortSignal.timeout((context.settings.timeoutSeconds||180)*1000),requestSignal=signal?AbortSignal.any([signal,timeout]):timeout;
+    const timeout=AbortSignal.timeout((context.settings.timeoutSeconds||180)*1000);requestSignal=signal?AbortSignal.any([signal,timeout]):timeout;
     requestSignal.throwIfAborted();dispatched=true;
+    stage='transport';
     const response=await fetcher(prepared.endpoint,{method:'POST',redirect:'error',signal:requestSignal,headers:{authorization:`Bearer ${key}`,'content-type':'application/json'},body:prepared.body});
-    // Never retry a paid POST. HTTP failure bodies may contain private source; do not log them.
-    insist(response.ok,502,`Provider API returned HTTP ${response.status}.`);
-    const data=await readResponse(response,requestSignal);usage=data.usage;
+    requestId=response.headers.get('x-request-id');
+    // Parse only a bounded error code. Never retain or expose a raw HTTP body.
+    if(!response.ok){
+      let code;
+      try{const data=await readResponse(response,requestSignal,65536);code=data?.error?.code;}catch{}
+      diagnostic=providerHttpDiagnostic(response.status,code,requestId);
+      throw new Error(diagnostic.summary);
+    }
+    stage='response';
+    const data=await readResponse(response,requestSignal);usage=data?.usage;responseId=data?.id;
+    if(data?.status==='incomplete')diagnostic=failureDiagnostic('provider_incomplete',{requestId,responseId,providerCode:data.incomplete_details?.reason});
+    else if(data?.status==='failed')diagnostic=failureDiagnostic('provider_unknown',{requestId,responseId,providerCode:data.error?.code});
+    else if(data?.status!=='completed')diagnostic=failureDiagnostic('provider_output',{requestId,responseId});
+    if(Array.isArray(data?.output)&&data.output.some(item=>item?.type==='message'&&Array.isArray(item.content)&&item.content.some(value=>value?.type==='refusal')))diagnostic=failureDiagnostic('provider_refusal',{requestId,responseId});
+    stage='accounting';
     try{cost=price(usage,context.settings);}
-    catch(error){if(!error.providerAccounting)throw error;const remaining=context.budgetMicros-context.spentMicros;if(error.providerCostMinimumMicros>remaining){cost=error.providerCostMinimumMicros;throw error;}cost=remaining;unreconciled=true;}
+    catch(error){if(!error.providerAccounting)throw error;const remaining=context.budgetMicros-context.spentMicros;if(error.providerCostMinimumMicros>remaining){cost=error.providerCostMinimumMicros;diagnostic=failureDiagnostic('budget',{requestId,responseId,providerCode:error.providerAccounting.reason});throw error;}cost=remaining;unreconciled=true;}
+    stage='output';
     insist(data.status==='completed',502,'Provider response was not completed.');
     const content=(data.output||[]).filter(item=>item.type==='message').flatMap(item=>item.content||[]);
+    if(content.some(item=>item.type==='refusal'))diagnostic=failureDiagnostic('provider_refusal',{requestId,responseId});
     insist(!content.some(item=>item.type==='refusal'),422,'The provider declined this task.');
     const text=content.filter(item=>item.type==='output_text').map(item=>item.text).join('');
     const action=JSON.parse(text);
-    insist(action&&typeof action==='object'&&!Array.isArray(action),502,'Provider action is invalid.');
-    return {action,costMicros:cost,unreconciled,usage};
+    stage='action';
+    const validated=actionData(action);
+    return {action:validated,costMicros:cost,unreconciled,usage};
   }catch(error){
-    const failure=new Error(error?.status?error.message:'Provider API did not return a usable agent response.');
+    diagnostic ||= failureDiagnostic(failureCategory(stage,error,requestSignal,signal),{requestId,responseId,providerCode:error?.providerAccounting?.reason});
+    const failure=new Error(diagnostic.summary);
+    failure.diagnostic=diagnostic;
     failure.status=error?.status||502;failure.providerFailure=dispatched;
     if(!dispatched)failure.providerCostMicros=0;else if(Number.isSafeInteger(cost))failure.providerCostMicros=cost;
+    if(unreconciled||stage==='accounting')failure.providerAccounting=error?.providerAccounting||{status:'unreconciled'};
     throw failure;
   }
 }

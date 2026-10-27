@@ -115,3 +115,7 @@ Verify a real owner task against a disclosed small allowance: plan without sourc
 Interactive NUI execution and simulated callbacks; agent-driven browser tests/screenshots; ZIP/file/GitHub imports; context attachment chips and visual element selection; official-documentation tools; selective undo/recovery panel; approved multi-task queues; model recommendation; configurable smart pricing/refund/recovery presets; optional notifications; and a safe member rollout remain unimplemented here. They must not be advertised as available or represented by fake success events.
 
 No subagents were launched in the authoring environment because no subagent execution facility was exposed. No production service was changed.
+
+## Reliability follow-up
+
+The later [agent reliability update](AGENT_RELIABILITY.md) fixes neutral unused action arguments, adds sanitized persisted failure categories and next steps, and fences streamed Quick builds against active project agents at commit time. Its verification and coordinated website/worker upgrade requirements are separate from this original owner-preview record. It does not identify the root cause of a past production task from its generic failure message alone.

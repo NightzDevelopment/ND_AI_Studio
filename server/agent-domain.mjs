@@ -1,9 +1,11 @@
 import { randomBytes } from 'node:crypto';
 import { insist, fields, string, integer, digest, filePath, validateFiles, changedFiles, project, snapshot, saveRevision, control, studioSettings, audit } from './studio-domain.mjs';
+import { diagnosticData, failureDiagnostic } from './agent-errors.mjs';
+import { actionData } from './agent-actions.mjs';
+export { ACTIONS, actionData } from './agent-actions.mjs';
 
 export const AGENT_PROTOCOL = '1';
 export const TERMINAL = new Set(['completed','conflict','failed','cancelled']);
-export const ACTIONS = ['list_files','read_file','search_files','write_file','delete_file','validate_project','propose_plan','ask_user','finish'];
 const OPERATIONS = ['create','edit','delete','dependencies','migrations'];
 const PRESETS = {
   balanced:{create:'automatic',edit:'automatic',delete:'ask',dependencies:'ask',migrations:'ask'},
@@ -57,21 +59,6 @@ export function planData(value,policy) {
   insist(capabilities.every(cap=>policy.permissions[cap]!=='prohibited'),403,'A planned capability is prohibited by project policy.');
   return {goal,steps,changes,capabilities};
 }
-export function actionData(value) {
-  fields(value,['type','message','path','query','content','plan']);
-  insist(ACTIONS.includes(value.type),400,'Unknown agent tool.');
-  const message=string(value.message,2000,'action summary',true);
-  const path=value.path===null?null:filePath(value.path);
-  const query=value.query===null?null:string(value.query,200,'search query');
-  insist(value.content===null||typeof value.content==='string'&&!value.content.includes('\0')&&Buffer.byteLength(value.content)<=65536,400,'Invalid tool content.');
-  insist(value.plan===null||typeof value.plan==='object'&&!Array.isArray(value.plan),400,'Invalid plan result.');
-  if(['read_file','write_file','delete_file'].includes(value.type))insist(path!==null,400,'This tool needs a path.');
-  if(value.type==='write_file')insist(typeof value.content==='string',400,'Write the complete file content.');
-  if(value.type==='search_files')insist(query!==null,400,'This tool needs a query.');
-  if(value.type==='propose_plan')insist(value.plan!==null,400,'This tool needs a plan.');
-  return {type:value.type,message,path,query,content:value.content,plan:value.plan};
-}
-
 export function migrateAgents(store) {
   store.transaction(()=>store.db.exec(`
     CREATE TABLE IF NOT EXISTS studio_agent_projects(project_id TEXT PRIMARY KEY REFERENCES studio_projects(id),value TEXT NOT NULL,version INTEGER NOT NULL DEFAULT 1) STRICT;
@@ -98,7 +85,7 @@ export class AgentEngine {
   chat(userId,chatId){this.owner(userId);const row=this.db.prepare('SELECT * FROM studio_agent_chats WHERE id=? AND user_id=?').get(chatId,userId);insist(row,404,'Conversation not found.');this.source(userId,row.project_id);return row;}
   task(taskId){const task=this.db.prepare('SELECT * FROM studio_agent_tasks WHERE id=?').get(taskId);insist(task,404,'Agent task not found.');return task;}
   job(task){return this.db.prepare('SELECT * FROM studio_jobs WHERE id=?').get(task.id);}
-  publicTask(task,details=true){const job=this.job(task);return {id:task.id,requestId:job.request_id,chatId:task.chat_id,projectId:task.project_id,mode:task.mode,phase:task.phase,state:task.state,version:task.version,plan:task.plan?parse(task.plan):null,planVersion:task.plan_version,planHash:task.plan?digest(task.plan):null,baseVersion:job.base_version,policyVersion:task.policy_version,steps:task.steps,maxSteps:task.max_steps,spentMicros:task.spent,reservedMicros:job.reserve,unreconciled:Boolean(task.unreconciled),appliedVersion:task.applied_version,undoVersion:task.undo_version,continuation:parse(task.policy).continuation,control:task.control,working:Boolean(this.db.prepare("SELECT 1 FROM studio_agent_steps WHERE task_id=? AND state='dispatched'").get(task.id)),model:parse(job.settings).model,provider:parse(job.settings).provider||'openai',billingMode:parse(job.settings).subscriptionBilling?'metered':'fixed',credits:this.models.describe(job).credits,checks:parse(task.checks),history:details?parse(task.history).map(({type,message,path,at,ok,error})=>({type,message,path,at,ok,error})):[],error:job.result?parse(job.result).error||null:null,createdAt:task.created_at,updatedAt:task.updated_at};}
+  publicTask(task,details=true){const job=this.job(task),result=job.result?parse(job.result):null;return {id:task.id,requestId:job.request_id,chatId:task.chat_id,projectId:task.project_id,mode:task.mode,phase:task.phase,state:task.state,version:task.version,plan:task.plan?parse(task.plan):null,planVersion:task.plan_version,planHash:task.plan?digest(task.plan):null,baseVersion:job.base_version,policyVersion:task.policy_version,steps:task.steps,maxSteps:task.max_steps,spentMicros:task.spent,reservedMicros:job.reserve,unreconciled:Boolean(task.unreconciled),appliedVersion:task.applied_version,undoVersion:task.undo_version,continuation:parse(task.policy).continuation,control:task.control,working:Boolean(this.db.prepare("SELECT 1 FROM studio_agent_steps WHERE task_id=? AND state='dispatched'").get(task.id)),model:parse(job.settings).model,provider:parse(job.settings).provider||'openai',billingMode:parse(job.settings).subscriptionBilling?'metered':'fixed',credits:this.models.describe(job).credits,checks:parse(task.checks),history:details?parse(task.history).map(({type,message,path,at,ok,error,diagnostic})=>({type,message,path,at,ok,error,...(diagnostic?{diagnostic}:{} )})):[],error:result?.error||null,failure:result?.diagnostic||null,createdAt:task.created_at,updatedAt:task.updated_at};}
   view(userId,chatId){const chat=this.chat(userId,chatId);return {chat,messages:this.db.prepare('SELECT id,role,text,created_at AS createdAt FROM studio_agent_messages WHERE chat_id=? ORDER BY id DESC LIMIT 100').all(chatId).reverse(),tasks:this.db.prepare('SELECT * FROM studio_agent_tasks WHERE chat_id=? ORDER BY created_at DESC LIMIT 50').all(chatId).map(task=>this.publicTask(task,false))};}
   note(task,role,text,request=null){if(role.startsWith('user'))insist(this.db.prepare('SELECT coalesce(sum(length(CAST(text AS BLOB))),0) n FROM studio_agent_messages WHERE user_id=?').get(task.user_id).n+Buffer.byteLength(text)<=8388608,409,'Account conversation storage reached 8 MiB. Export important conversations before requesting more storage.');this.db.prepare('INSERT INTO studio_agent_messages(chat_id,user_id,role,text,request_id,created_at) VALUES(?,?,?,?,?,?)').run(task.chat_id,task.user_id,role,text.slice(0,12000),request,this.stamp());}
   savePolicy(userId,projectId,body){this.source(userId,projectId,true);const data=policyData(body);integer(body.version,0,1e9,'instruction revision');return this.store.transaction(()=>{const current=this.policy(projectId);insist(current.version===body.version,409,'Project instructions changed. Reload before saving.');this.db.prepare('INSERT INTO studio_agent_projects VALUES(?,?,1) ON CONFLICT(project_id) DO UPDATE SET value=excluded.value,version=studio_agent_projects.version+1').run(projectId,JSON.stringify(data));audit(this.store,userId,'agent.policy.update',projectId,`Preset ${data.preset}; revision ${current.version+1}`);return this.policy(projectId);});}
@@ -161,11 +148,11 @@ export class AgentEngine {
       if(body.mode==='redirect')this.db.prepare('UPDATE studio_agent_tasks SET redirect=? WHERE id=?').run(text,t.id);
       this.changeState(t,t.state==='running'?'running':'paused',t.state==='running'?'pause':'');
     }return {ok:true};});}
-  finish(task,state,message,cost=null,reason='failure'){
+  finish(task,state,message,cost=null,reason='failure',diagnostic=null){
     if(TERMINAL.has(task.state))return;
     const job=this.job(task),spent=cost===null?task.spent:Math.max(task.spent,cost);
     this.db.prepare('UPDATE studio_agent_tasks SET state=?,spent=?,lease=NULL,lease_until=NULL,control=\'\',version=version+1,updated_at=? WHERE id=?').run(state,spent,this.stamp(),task.id);
-    this.db.prepare('UPDATE studio_jobs SET status=?,cost=?,result=?,updated_at=? WHERE id=?').run(state==='completed'?'applied':state==='conflict'?'review':state,spent,JSON.stringify({error:message,reason,...(task.unreconciled?{accounting:{status:'unreconciled',reason:'agent-usage-unreconciled'}}:{})}),this.stamp(),task.id);
+    this.db.prepare('UPDATE studio_jobs SET status=?,cost=?,result=?,updated_at=? WHERE id=?').run(state==='completed'?'applied':state==='conflict'?'review':state,spent,JSON.stringify({error:message,reason,...(diagnostic?{diagnostic:diagnosticData(diagnostic)}:{}),...(task.unreconciled?{accounting:{status:'unreconciled',reason:'agent-usage-unreconciled'}}:{})}),this.stamp(),task.id);
     // Preserve the captured catalog billing mode: fixed task credits or the
     // existing metered subscription allowance. Failures release customer holds;
     // provider expenditure is recorded separately and never becomes a retry.
@@ -174,7 +161,7 @@ export class AgentEngine {
   }
   recover(){
     const rows=this.db.prepare("SELECT * FROM studio_agent_tasks WHERE state='running' AND lease_until<?").all(this.now());
-    for(const t of rows)this.store.transaction(()=>{const current=this.task(t.id);if(current.state!=='running'||current.lease_until>=this.now())return;const pending=this.db.prepare("SELECT 1 FROM studio_agent_steps WHERE task_id=? AND state='dispatched'").get(t.id);if(pending){this.db.prepare('UPDATE studio_agent_tasks SET unreconciled=1 WHERE id=?').run(t.id);current.unreconciled=1;}this.finish(current,'failed',pending?'Worker stopped during a provider request. No request was replayed. Studio credits were returned; provider cost remains unreconciled.':'Worker stopped. Studio credits were returned. No paid step was replayed.',pending?this.job(t).reserve:null,'worker');});
+    for(const t of rows)this.store.transaction(()=>{const current=this.task(t.id);if(current.state!=='running'||current.lease_until>=this.now())return;const pending=this.db.prepare("SELECT 1 FROM studio_agent_steps WHERE task_id=? AND state='dispatched'").get(t.id);if(pending){this.db.prepare('UPDATE studio_agent_tasks SET unreconciled=1 WHERE id=?').run(t.id);current.unreconciled=1;}this.finish(current,'failed',pending?'Worker stopped during a provider request. No request was replayed. Studio credits were returned; provider cost remains unreconciled.':'Worker stopped. Studio credits were returned. No paid step was replayed.',pending?this.job(t).reserve:null,'worker',failureDiagnostic(pending?'receipt_uncertain':'platform'));});
   }
   claim(providers=['openai','deepseek']){this.recover();return this.store.transaction(()=>{const rows=this.db.prepare("SELECT * FROM studio_agent_tasks WHERE state='queued' ORDER BY created_at,id LIMIT 100").all();for(const t of rows){
     if(!providers.includes(parse(this.job(t).settings).provider||'openai'))continue;
@@ -193,7 +180,7 @@ export class AgentEngine {
     return false;
   }
   heartbeat(body){return this.store.transaction(()=>{const t=this.workerTask(body);this.db.prepare('UPDATE studio_agent_tasks SET lease_until=? WHERE id=?').run(this.now()+120000,t.id);return {ok:true,control:t.control};});}
-  next(body){return this.store.transaction(()=>{const t=this.workerTask(body);if(this.checkpointStop(t))return {stopped:true};if(t.steps>=t.max_steps){this.finish(t,'failed','The approved model-call limit was reached. Staged work was preserved and Studio credits returned.');return {stopped:true};}return {stopped:false,context:this.context(t)};});}
+  next(body){return this.store.transaction(()=>{const t=this.workerTask(body);if(this.checkpointStop(t))return {stopped:true};if(t.steps>=t.max_steps){this.finish(t,'failed','The approved model-call limit was reached. Staged work was preserved and Studio credits returned.',null,'exhausted',failureDiagnostic('budget'));return {stopped:true};}return {stopped:false,context:this.context(t)};});}
   dispatch(body){fields(body,['id','lease','index','requestHash','estimateMicros']);integer(body.index,0,23,'agent call number');integer(body.estimateMicros,0,1e9,'request estimate');insist(typeof body.requestHash==='string'&&/^[a-f0-9]{64}$/.test(body.requestHash),400,'Invalid request fingerprint.');return this.store.transaction(()=>{const t=this.workerTask(body);if(this.checkpointStop(t))return {allowed:false,reason:'paused'};const old=this.db.prepare('SELECT * FROM studio_agent_steps WHERE task_id=? AND step=?').get(t.id,body.index);if(old){insist(old.request_hash===body.requestHash&&old.estimate===body.estimateMicros,409,'The call was already recorded with different data.');return {allowed:false,reason:'already-recorded'};}insist(body.index===t.steps&&t.steps<t.max_steps,409,'The agent step changed.');insist(t.spent+body.estimateMicros<=this.job(t).reserve,409,'The next call does not fit the approved task budget.');const callId=id();this.db.prepare("INSERT INTO studio_agent_steps(task_id,step,call_id,request_hash,lease,estimate,state) VALUES(?,?,?,?,?,?,'dispatched')").run(t.id,t.steps,callId,body.requestHash,t.lease,body.estimateMicros);return {allowed:true,callId};});}
   addHistory(task,item){const history=parse(task.history);history.push({...item,at:this.stamp()});let raw=JSON.stringify(history);while(Buffer.byteLength(raw)>524288&&history.length>1){history.shift();raw=JSON.stringify(history);}insist(Buffer.byteLength(raw)<=524288,413,'Agent context is too large.');this.db.prepare('UPDATE studio_agent_tasks SET history=?,updated_at=? WHERE id=?').run(raw,this.stamp(),task.id);}
   planCovers(task,plan){
@@ -254,11 +241,11 @@ export class AgentEngine {
     const spent=t.spent+body.costMicros;insist(Number.isSafeInteger(spent),400,'Invalid cost total.');
     this.db.prepare('UPDATE studio_agent_tasks SET steps=steps+1,spent=?,unreconciled=?,version=version+1,updated_at=? WHERE id=?').run(spent,Number(Boolean(body.unreconciled)),this.stamp(),t.id);
     let current=this.task(t.id),result;
-    if(spent>this.job(t).reserve){this.finish(current,'failed','Provider cost exceeded the approved estimate. Source was not changed and Studio credits were returned.',spent,'budget');result={stopped:true};}
+    if(spent>this.job(t).reserve){this.finish(current,'failed','Provider cost exceeded the approved estimate. Source was not changed and Studio credits were returned.',spent,'budget',failureDiagnostic('budget'));result={stopped:true};}
     else if(current.control==='stop'){this.finish(current,'cancelled','Task stopped. Source was not changed by the returned action and Studio credits were returned.');result={stopped:true};}
     else {
       try{this.authorized(current);result=this.execute(current,action);}
-      catch(error){if(!error.status)throw error;result={type:action.type,message:action.message,path:action.path,ok:false,error:error.message};if([401,403].includes(error.status)){this.changeState(current,'awaiting_input');this.db.prepare('UPDATE studio_agent_tasks SET lease=NULL,lease_until=NULL WHERE id=?').run(t.id);}}
+      catch(error){if(!error.status)throw error;result={type:action.type,message:action.message,path:action.path,ok:false,error:error.message,diagnostic:failureDiagnostic([401,403].includes(error.status)?'action_permission':[400,413,422].includes(error.status)?'invalid_action':'action_conflict')};if([401,403].includes(error.status)){this.changeState(current,'awaiting_input');this.db.prepare('UPDATE studio_agent_tasks SET lease=NULL,lease_until=NULL WHERE id=?').run(t.id);}}
       this.addHistory(this.task(t.id),result);current=this.task(t.id);
       if(!TERMINAL.has(current.state)&&current.state==='running'&&!result.validation)this.checkpointStop(current);
     }
@@ -271,7 +258,21 @@ export class AgentEngine {
       const policy=parse(t.policy),protectedNames=parse(t.files).filter(file=>protectedPath(file.path,policy)).map(file=>file.path);
       const checks=r.checks.map(check=>protectedNames.some(path=>check.includes(path))?'A protected file has a validation result. Its contents were not sent to the model.':check);
       this.db.prepare('UPDATE studio_agent_tasks SET validated_hash=?,checks=?,version=version+1 WHERE id=?').run(r.ok?body.filesHash:null,JSON.stringify(checks),t.id);this.addHistory(t,{type:'validation_result',ok:r.ok,message:r.ok?'Isolated syntax and packaging checks passed.':'Validation needs attention.',output:checks});
-      if(r.kind==='infrastructure')this.finish(this.task(t.id),'failed','Validator infrastructure failed. No paid repair was requested and Studio credits were returned.');else this.checkpointStop(this.task(t.id));
+      if(r.kind==='infrastructure')this.finish(this.task(t.id),'failed','Validator infrastructure failed. No paid repair was requested and Studio credits were returned.',null,'platform',failureDiagnostic('validator_infrastructure'));else this.checkpointStop(this.task(t.id));
       return {ok:true,state:this.task(t.id).state};}));}
-  fail(body){fields(body,['id','lease','callId','reason','costMicros','uncertain']);insist(['provider','platform','budget','exhausted'].includes(body.reason),400,'Invalid failure category.');integer(body.costMicros,0,1e9,'known provider cost');insist(typeof body.uncertain==='boolean',400,'Invalid accounting certainty.');return this.store.transaction(()=>this.receipt(body.id,`failure:${body.callId||'preflight'}`,digest(JSON.stringify(body)),()=>{const t=this.workerTask(body),cost=body.uncertain?Math.max(t.spent,this.job(t).reserve):t.spent+body.costMicros;if(body.uncertain){this.db.prepare('UPDATE studio_agent_tasks SET unreconciled=1 WHERE id=?').run(t.id);t.unreconciled=1;}const message=body.reason==='provider'?'Provider API failure. All task Studio credits were returned. No automatic retry was made.':body.reason==='budget'?'The next step does not fit the approved budget. Staged progress is preserved and Studio credits were returned.':'Task stopped after an execution failure. Staged progress is preserved and Studio credits were returned.';this.finish(t,t.control==='stop'?'cancelled':'failed',message,cost,body.reason);return {ok:true,state:this.task(t.id).state};}));}
+  fail(body){
+    fields(body,['id','lease','callId','reason','costMicros','uncertain','diagnostic']);
+    insist(['provider','platform','budget','exhausted','action'].includes(body.reason),400,'Invalid failure category.');
+    integer(body.costMicros,0,1e9,'known provider cost');insist(typeof body.uncertain==='boolean',400,'Invalid accounting certainty.');
+    const diagnostic=body.diagnostic?diagnosticData(body.diagnostic):failureDiagnostic(body.reason==='provider'?'provider_unknown':body.reason==='budget'||body.reason==='exhausted'?'budget':body.reason==='action'?'invalid_action':'platform');
+    return this.store.transaction(()=>this.receipt(body.id,`failure:${body.callId||'preflight'}`,digest(JSON.stringify(body)),()=>{
+      const t=this.workerTask(body),known=t.spent+body.costMicros;
+      insist(Number.isSafeInteger(known),400,'Invalid provider cost total.');
+      const cost=body.uncertain?Math.max(known,this.job(t).reserve):known;
+      if(body.uncertain){this.db.prepare('UPDATE studio_agent_tasks SET unreconciled=1 WHERE id=?').run(t.id);t.unreconciled=1;}
+      const message=`${diagnostic.summary} All task Studio credits were returned. Staged progress is preserved. No automatic retry was made.`;
+      this.finish(t,t.control==='stop'?'cancelled':'failed',message,cost,body.reason,diagnostic);
+      return {ok:true,state:this.task(t.id).state};
+    }));
+  }
 }

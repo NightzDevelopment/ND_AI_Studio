@@ -2,6 +2,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { digest } from '../server/studio-domain.mjs';
 import { prepareAgentRequest, requestAgentAction } from './agent-provider.mjs';
 import { validate, validateEnvironment } from './validate.mjs';
+import { failureDiagnostic } from '../server/agent-errors.mjs';
 
 // Retry only immutable API receipts. This never repeats a paid provider request.
 export async function deliverAgentReceipt(api,path,body,{wait=delay}={}) {
@@ -23,14 +24,17 @@ export async function runAgentTask(job,{key,image,api,signal,turn=requestAgentAc
     finally{busy=false;}
   },10000);
   const send=(path,body)=>deliverAgentReceipt(api,path,body,{wait});
-  const fail=(reason,error,callId)=>send('/api/agent/worker/fail',{...auth,callId:callId||null,reason,costMicros:Number.isSafeInteger(error?.providerCostMicros)?error.providerCostMicros:0,uncertain:reason==='provider'&&!Number.isSafeInteger(error?.providerCostMicros)});
+  const fail=(reason,error,callId)=>send('/api/agent/worker/fail',{...auth,callId:callId||null,reason,
+    costMicros:Number.isSafeInteger(error?.providerCostMicros)?error.providerCostMicros:0,
+    uncertain:Boolean(error?.providerAccounting||error?.uncertain||callId&&!Number.isSafeInteger(error?.providerCostMicros)),
+    diagnostic:error?.diagnostic||failureDiagnostic(reason==='provider'?'provider_unknown':reason==='action'?'invalid_action':reason==='budget'?'budget':'platform')});
   try{
     while(!controller.signal.aborted){
       const next=await api('/api/agent/worker/next',auth);if(next.stopped)return;
       const context=next.context;
       if(!ready&&context.phase==='build'){
         try{await preflight(context.project.tool,{image,signal:controller.signal});ready=true;}
-        catch(error){if(controller.signal.aborted)throw error;await fail('platform',error);return;}
+        catch(error){if(controller.signal.aborted)throw error;await fail('platform',{providerCostMicros:0,diagnostic:failureDiagnostic('validator_infrastructure')});return;}
       }
       let prepared;
       try{prepared=prepareAgentRequest(context);}
@@ -43,14 +47,14 @@ export async function runAgentTask(job,{key,image,api,signal,turn=requestAgentAc
       inFlight=dispatch.callId;
       let generated;
       try{generated=await turn(context,prepared,{key,signal:controller.signal});}
-      catch(error){await fail(error.providerFailure===false?'platform':'provider',error,inFlight);inFlight=null;return;}
+      catch(error){await fail(error.diagnostic?.category==='invalid_action'?'action':error.providerFailure===false?'platform':'provider',error,inFlight);inFlight=null;return;}
       // Keep delivery outside the provider catch. A committed success with a lost
       // acknowledgement must never be replaced by a failure or a refund.
       receiptPending=true;
       let result;
       try{result=await send('/api/agent/worker/step',{...auth,callId:inFlight,...generated});}
       catch(error){
-        if([400,413,422].includes(error.status)){receiptPending=false;await fail('provider',{providerCostMicros:generated.costMicros},inFlight);inFlight=null;return;}
+        if([400,413,422].includes(error.status)){receiptPending=false;await fail('action',{providerCostMicros:generated.costMicros,uncertain:generated.unreconciled,diagnostic:failureDiagnostic('invalid_action')},inFlight);inFlight=null;return;}
         throw error;
       }
       receiptPending=false;const callId=inFlight;inFlight=null;
