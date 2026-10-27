@@ -24,8 +24,14 @@
     <span id="connection" class="conn" role="status">Connecting</span>
   </div>
 </div>
-<div class="app-body">
-  <aside class="sidebar">
+<div class="app-body" id="workbench" data-panel="chat">
+  <aside class="sidebar" id="workspace">
+    <h1 id="agent-project-title" class="sr-only">Your project, in conversation.</h1>
+    <p id="agent-project-context" class="sr-only">Inspect. Approve a plan. Build with your chosen model.</p>
+    <label class="side-select">Project <select id="project-select" aria-label="Project"></select></label>
+    <label class="side-select">Conversation <select id="chat-select" aria-label="Conversation"></select></label>
+    <button id="new-chat" type="button" hidden>New chat</button>
+    <button id="rename-chat" type="button" hidden>Rename chat</button>
     <div class="account">
       <div class="avatar" id="account-avatar"></div>
       <div>
@@ -47,7 +53,7 @@
       <button id="side-settings" type="button" class="side-link">Settings</button>
     </div>
   </aside>
-  <div class="chat-area">
+  <div class="chat-area" id="content" tabindex="-1">
     <div class="chat-head">
       <div>
         <span id="chat-title">Conversation</span>
@@ -55,15 +61,30 @@
       </div>
       <div class="chat-status"><span id="task-state-dot" class="status-dot"></span><span id="task-state">Awaiting instructions</span></div>
     </div>
+    <div class="task-controls">
+      <button id="pause" type="button" disabled>Pause</button>
+      <button id="resume" type="button" disabled>Resume</button>
+      <button id="stop" type="button" disabled>Stop</button>
+      <button id="undo" type="button" disabled>Undo</button>
+      <button id="approve" type="button" hidden>Approve plan</button>
+      <button id="edit-plan" type="button" hidden>Edit plan</button>
+      <button id="refresh" type="button">Refresh</button>
+      <a id="export" href="#" hidden>Export</a>
+      <a id="history" href="/workspace.html#projects">History</a>
+    </div>
     <div id="messages" class="messages" aria-live="polite"></div>
     <div class="composer-anchor">
       <form id="composer">
         <textarea id="message" name="message" rows="2" maxlength="12000" placeholder="Describe a change, ask a question, or reference @client/main.lua" required></textarea>
+        <p id="quote" class="fine"></p>
         <div class="composer-bar">
           <span id="composer-context" class="fine"></span>
           <div class="composer-ctrls">
-            <label class="mini">Mode <select name="mode" id="mode-select"><option value="build">Plan &amp; build</option><option value="ask">Ask</option></select></label>
+            <label class="mini">Mode <select name="mode" id="mode-select"><option value="build">Plan &amp; build</option><option value="ask">Ask</option><option value="debug">Debug</option></select></label>
             <label class="mini">Model <select id="model-select" name="modelId"></select></label>
+            <label class="mini">Active task <select name="messageMode"><option value="queue">Queue message</option><option value="pause">Pause and discuss</option><option value="redirect">Redirect and replan</option></select></label>
+            <label class="mini">Disconnect <select name="continuation"><option value="pause">Pause safely</option><option value="finish-current">Finish current task</option></select></label>
+            <label class="mini">Calls <input name="maxSteps" type="number" min="4" max="24" value="16" required></label>
             <button type="submit" class="send" id="send">Send</button>
           </div>
         </div>
@@ -85,11 +106,22 @@
     </div>
     <div id="tool-files" class="tool-pane" hidden>
       <div class="tool-subhead">Files <button id="tool-files-close" type="button" class="mini-close">×</button></div>
-      <div id="tool-file-list" class="file-list-compact"></div>
+      <div class="editor-font-tools" role="group" aria-label="Code text size"><button type="button" data-font-size="decrease" aria-label="Decrease code text size">A-</button><output id="workbench-font-size" aria-live="polite">14 px</output><button type="button" data-font-size="increase" aria-label="Increase code text size">A+</button></div>
+      <label class="file-search"><span class="sr-only">Filter source files</span><input id="workbench-file-search" type="search" placeholder="Find a file..." autocomplete="off"></label>
+      <div class="editor-controls"><label>Source <select id="source-mode"><option value="saved">Saved project</option><option value="staged">Agent staging (read-only)</option></select></label><button id="attach-file" type="button" disabled>Reference file</button></div>
+      <nav id="files" class="file-list-compact" aria-label="Project files"></nav>
+      <p id="workbench-file-empty" class="file-search-empty" hidden>No matching files.</p>
+      <p id="workbench-file-count" class="file-search-count" aria-live="polite"></p>
+      <div id="tool-file-list" class="file-list-compact" hidden></div>
       <div id="tool-editor" class="tool-editor">
-        <div class="editor-bar"><span id="tool-file-name">Select a file</span><button id="tool-save-file" type="button" class="mini-btn" disabled>Save</button></div>
-        <textarea id="tool-code" spellcheck="false" autocomplete="off" autocapitalize="off" aria-label="Source"></textarea>
+        <div class="editor-bar"><span id="file-name">Select a file</span><span id="revision" class="fine"></span><button id="save-file" type="button" class="mini-btn" disabled>Save</button></div>
+        <textarea id="code" spellcheck="false" autocomplete="off" autocapitalize="off" aria-label="Source code" disabled></textarea>
+        <div class="editor-foot"><span id="draft-status">Saved source is separate from agent staging.</span><button id="download-draft" type="button" disabled>Download draft</button></div>
+        <span id="tool-file-name" hidden>Select a file</span>
+        <button id="tool-save-file" type="button" hidden disabled>Save</button>
+        <textarea id="tool-code" hidden spellcheck="false" autocomplete="off" autocapitalize="off" aria-label="Source"></textarea>
       </div>
+      <p class="fine source-note">Source is text only here. Nothing in this editor executes on the host or a FiveM server.</p>
     </div>
     <div id="tool-changes" class="tool-pane" hidden>
       <div class="tool-subhead">Changes</div>
@@ -97,7 +129,12 @@
     </div>
     <div id="tool-progress" class="tool-pane" hidden>
       <div class="tool-subhead">Progress</div>
+      <label class="mini">Task <select id="task-select" aria-label="Task history"></select></label>
+      <div id="plan"></div>
+      <div id="checks"></div>
+      <div id="actions"></div>
       <div id="tool-progress-content"><div id="tool-actions"></div><div id="tool-log"></div></div>
+      <details class="preview-boundary"><summary>NUI preview not connected</summary><p>This release provides source staging and isolated syntax checks. Interactive NUI simulation and agent browser testing are not enabled yet. Generated source does not execute in this workbench.</p></details>
     </div>
   </aside>
 </div>
