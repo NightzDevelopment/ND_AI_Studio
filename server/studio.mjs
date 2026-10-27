@@ -385,6 +385,9 @@ export function createStudio({ store, config, catalog, required, mutation, readJ
             const current=project(store,a.user.id,row.id);
             insist(!current.archived && current.version === body.version,409,'Project changed. Reload before generating.');
             insist(allowed(current.tool_id,a.user),403,'This generator is not enabled for your account.');
+            // The agent router's early check is not a commit-time fence: its
+            // state can change while this request body is still arriving.
+            insist(!store.db.prepare("SELECT 1 FROM studio_jobs WHERE project_id=? AND status='agent'").get(current.id),409,'Finish or stop the project agent task before starting a separate build.');
             const s=models.select(body,a.user.id);
             insist(workerReady(s.provider || 'openai'),503,'The connected worker has no configured credential for the selected provider. Choose a supported model or configure that provider privately on the worker.');
             const limits=control(store,a.user.id), day=now.slice(0,10);

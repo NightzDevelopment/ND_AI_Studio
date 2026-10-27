@@ -235,3 +235,6 @@
 @media(forced-colors:active){.studio-surface .source-gutter{color:GrayText;border-color:CanvasText}.studio-surface .workbench-state,.studio-surface .mode-tag{border-color:CanvasText}}
 
 @media(max-width:700px){.studio-surface[data-workspace="source"] #workbench[data-panel="editor"] .file-panel,.studio-surface[data-workspace="source"] #workbench[data-panel="editor"] .build-panel,.studio-surface[data-workspace="source"] #workbench[data-panel="files"] .editor-panel,.studio-surface[data-workspace="source"] #workbench[data-panel="files"] .build-panel,.studio-surface[data-workspace="source"] #workbench[data-panel="build"] .editor-panel,.studio-surface[data-workspace="source"] #workbench[data-panel="build"] .file-panel{display:none}}
+.studio-surface ::-webkit-scrollbar{width:6px;height:6px}.studio-surface ::-webkit-scrollbar-track{background:#16131b}.studio-surface ::-webkit-scrollbar-thumb{background:#5f3a46;border-radius:3px}.studio-surface ::-webkit-scrollbar-thumb:hover{background:#70404f}
+.studio-surface :is(.file-list,.build-log,.messages,.plan-panel,.code-wrap textarea,#code,.source-code-shell){scrollbar-width:thin;scrollbar-color:#5f3a46 #16131b}
+.select-options.up{top:auto;bottom:calc(100% + 5px)}

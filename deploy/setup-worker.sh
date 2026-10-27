@@ -33,6 +33,7 @@ release="$(mktemp -d "$base/releases/$(date -u +%Y%m%dT%H%M%SZ)-XXXXXX")"
 install -d -m 0700 "$release/worker" "$release/server"
 for file in worker/*.mjs; do install -m 0600 "$file" "$release/worker/"; done
 install -m 0600 server/studio-domain.mjs "$release/server/"
+install -m 0600 server/agent-actions.mjs server/agent-errors.mjs "$release/server/"
 # Build trusted validators only. No user files, tokens or host sockets enter the image.
 docker build --tag nd-ai-validator:local worker
 image="$(docker image inspect nd-ai-validator:local --format '{{.Id}}')"

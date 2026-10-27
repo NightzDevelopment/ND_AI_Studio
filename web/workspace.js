@@ -292,7 +292,7 @@ function acceptJob(job){
   state.job=job;
 }
 function renderBuilds(){
-  if(!state.project)return;const allowed=state.capabilities?.tools.find(tool=>tool.id===state.project.tool_id),active=state.jobs.some(job=>['queued','running'].includes(job.status));
+  if(!state.project)return;const allowed=state.capabilities?.tools.find(tool=>tool.id===state.project.tool_id),active=state.jobs.some(job=>['queued','running','agent'].includes(job.status));
   $('build-notice').textContent=!allowed?'This tool has no generation engine yet. You can still manage its source files.':!allowed.enabled?'The owner has not enabled this generator for your account.':!state.capabilities.workerReady?'Waiting for a configured isolated worker. Source editing and exports are available.':'Validated builds save a new project revision automatically. Conflicting output stays available for comparison and ZIP download. Runtime behavior still needs testing.';
   $('generate-button').disabled=!allowed?.enabled||!state.capabilities.workerReady||active||Boolean(state.project.archived)||state.buildSubmitting||sourceBusy()||!models.available();
   models.render(active||state.buildSubmitting);
@@ -302,13 +302,14 @@ function renderBuilds(){
   const nodes=state.job.events.map(event=>{const p=el('p');p.append(el('strong','',`${new Date(event.createdAt).toLocaleTimeString()} [${event.stage}] `),document.createTextNode(event.message));return p;});
   if(state.job.result?.checks)for(const check of state.job.result.checks)nodes.push(el('p','',check));
   if(state.job.result?.error)nodes.push(el('p','danger',state.job.result.error));
+  if(state.job.result?.diagnostic){const d=state.job.result.diagnostic;nodes.push(el('p','notice',`${d.summary} ${d.nextStep}`),el('p','fine',[d.category,d.httpStatus?`HTTP ${d.httpStatus}`:null,d.providerCode,d.requestId,d.responseId].filter(Boolean).join(' / ')));}
   if(state.job.applicationError)nodes.push(el('p','danger',`${state.job.applicationError} Finished output is preserved. Download the build ZIP or compare its files with your saved source.`));
   if(state.job.appliedVersion)nodes.push(el('p','',`Saved as project revision ${state.job.appliedVersion}. History, comparison and ZIP remain available.`));
   const unreconciled=state.job.result?.accounting?.status==='unreconciled';
   if(unreconciled){
     const reasons={'cache-write-lifetimes-unavailable':'Cache-write lifetime details were not provided.','cache-write-price-unconfigured':'A required cache-write price is not configured.'};
     const delivered=Array.isArray(state.job.result?.files)&&['applied','review'].includes(state.job.status);
-    const warning=el('p','notice',`Provider accounting needs reconciliation. ${reasons[state.job.result.accounting.reason]||'Cache-write token cost could not be reconciled.'}${delivered?' Validated source and its ZIP remain available.':''}`);
+    const warning=el('p','notice',`Provider accounting needs reconciliation. ${reasons[state.job.result.accounting.reason]||'Provider usage cost could not be reconciled.'}${delivered?' Validated source and its ZIP remain available.':''}`);
     warning.dataset.providerAccounting='unreconciled';nodes.push(warning);
   }
   let providerCost=`API cost estimate: ${money(state.job.costMicros)} / reservation: ${money(state.job.reservedMicros)}. Provider invoices may differ.`;
@@ -541,7 +542,7 @@ for(const node of document.querySelectorAll('[data-close]'))node.addEventListene
 for(const node of document.querySelectorAll('button[data-panel]'))node.addEventListener('click',()=>panel(node.dataset.panel));
 setInterval(async()=>{
   if(document.hidden||state.pollBusy||!state.project||$('editor-view').hidden||!state.session?.user||!navigator.onLine)return;
-  const active=state.jobs.some(job=>['queued','running'].includes(job.status));idlePollTick=active?false:!idlePollTick;if(!active&&idlePollTick)return;
+  const active=state.jobs.some(job=>['queued','running','agent'].includes(job.status));idlePollTick=active?false:!idlePollTick;if(!active&&idlePollTick)return;
   state.pollBusy=true;try{await loadJobs();}catch(failure){error(failure.message);}finally{state.pollBusy=false;}
 },2000);
 window.addEventListener('offline',()=>{syncStatus('Offline. Showing the last saved source and local drafts.');renderLivePreview();});
