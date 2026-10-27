@@ -14,6 +14,8 @@ const files = { '/agent.html': ['agent.html', 'text/html'], '/agent.js': ['agent
   '/privacy.html': ['privacy.html', 'text/html'], '/acceptable-use.html': ['acceptable-use.html', 'text/html'],
   '/nd-logo.webp': ['nd-logo.webp', 'image/webp'], '/favicon.png': ['favicon.png', 'image/png'],
   '/favicon.ico': ['favicon.ico', 'image/vnd.microsoft.icon'] };
+files['/workbench-ui.css'] = ['workbench-ui.css', 'text/css'];
+files['/workbench-ui.js'] = ['workbench-ui.js', 'text/javascript'];
 const port = Number(process.env.PORT ?? 3080);
 if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('PORT must be between 1 and 65535.');
 const server = createServer(async (request, response) => {
